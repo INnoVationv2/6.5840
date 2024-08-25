@@ -1,30 +1,19 @@
 package main
 
-import (
-	"fmt"
-	"time"
-)
-
-func asyncTask(done chan bool) {
-	time.Sleep(10 * time.Second)
-	done <- true
-}
-
-func timeoutHandler() {
-	fmt.Println("超时...")
-}
-
 func main() {
-	done := make(chan bool)
+	//dir, _ := os.Getwd()
+	//file, err := os.CreateTemp(dir, "mr-1-2_")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
 
-	go asyncTask(done)
+	var values map[string]string
+	values = make(map[string]string)
 
-	timeout := time.After(2 * time.Second)
-
-	select {
-	case <-done:
-		fmt.Println("任务完成")
-	case <-timeout:
-		timeoutHandler()
+	for _, v := range values {
+		println(v)
 	}
+
+	//println("file" + file.Name())
+	//file.Close()
 }
