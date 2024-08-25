@@ -28,12 +28,12 @@ type Coordinator struct {
 func (c *Coordinator) GetWorkerConf(arg *WorkerIdArg, reply *WorkerInitReply) error {
 	reply.NReduce = c.nReduce
 	reply.Number = atomic.AddInt32(&c.workerCnt, 1)
-	log.Printf("[Coordinator]GetWorkerConf:New Worker %d Connect.\n", reply.Number)
+	//log.Printf("[Coordinator]GetWorkerConf:New Worker %d Connect.\n", reply.Number)
 	return nil
 }
 
 func (c *Coordinator) GetJobIdList(arg *WorkerIdArg, reply *JobIdListReply) error {
-	log.Printf("[Coordinator]GetWorkerList:Worker %d request Worker List.\n", arg.WorkerId)
+	//log.Printf("[Coordinator]GetWorkerList:Worker %d request Worker List.\n", arg.WorkerId)
 	reply.JobIds = c.reduceJobIds
 	return nil
 }
@@ -44,13 +44,13 @@ func (c *Coordinator) GetJob(arg *WorkerIdArg, jobReply *Job) error {
 
 	if c.Done() {
 		jobReply.JobType = Exist
-		log.Println("[Coordinator]All Job Are Complete, Ask All Worker Exit.")
+		//log.Println("[Coordinator]All Job Are Complete, Ask All Worker Exit.")
 		return nil
 	}
 
 	job := jobPendingList.GetFirstElem()
 	if job.JobType == 0 {
-		log.Printf("[Coordinator]GetJob:Worker %d Request Job, But All Map Job Is Complete.\n", arg.WorkerId)
+		//log.Printf("[Coordinator]GetJob:Worker %d Request Job, But All Map Job Is Complete.\n", arg.WorkerId)
 		return nil
 	}
 
@@ -62,13 +62,13 @@ func (c *Coordinator) GetJob(arg *WorkerIdArg, jobReply *Job) error {
 	jobProcessingList.Add(*jobReply)
 
 	go c.timeoutMonitor(jobReply)
-	log.Printf("[Coordinator]GetJob:Worker %d Request Job, Dispatch Job:%v.\n", arg.WorkerId, jobReply)
-	log.Printf(c.getCoordinatorStatus())
+	//log.Printf("[Coordinator]GetJob:Worker %d Request Job, Dispatch Job:%v.\n", arg.WorkerId, jobReply)
+	//log.Printf(c.getCoordinatorStatus())
 	return nil
 }
 
 func (c *Coordinator) FinishJob(job *Job, reply *NilArg) error {
-	log.Printf("[Coordinator]FinishJob:Worker %d Finish Job:%v.\n", job.WorkerId, job.JobName)
+	//log.Printf("[Coordinator]FinishJob:Worker %d Finish Job:%v.\n", job.WorkerId, job.JobName)
 
 	jobProcessingList := c.getProcessingJobList()
 	jobPendingList := c.getPendingJobList()
@@ -81,11 +81,11 @@ func (c *Coordinator) FinishJob(job *Job, reply *NilArg) error {
 
 	// 当所有任务完成，切换成Reduce阶段
 	if job.JobType == Map && jobPendingList.IsEmpty() && jobProcessingList.IsEmpty() {
-		log.Printf("[Coordinator]All Map Job Complete, Switch To Reduce Stage\n")
+		//log.Printf("[Coordinator]All Map Job Complete, Switch To Reduce Stage\n")
 		atomic.CompareAndSwapInt32(&c.stage, Map, Reduce)
 	}
 
-	log.Printf(c.getCoordinatorStatus())
+	//log.Printf(c.getCoordinatorStatus())
 	return nil
 }
 
@@ -99,7 +99,7 @@ func (c *Coordinator) server() {
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	log.Printf("[Coordinator]Coordinator start, Waiting for Worker.\n")
+	//log.Printf("[Coordinator]Coordinator start, Waiting for Worker.\n")
 	go http.Serve(l, nil)
 }
 
@@ -130,13 +130,13 @@ func (c *Coordinator) timeoutMonitor(job *Job) {
 		pendingJobList := c.getPendingJobList()
 		pendingJobList.Add(*job)
 		jobProcessingList.Remove(job)
-		log.Printf("[Coordinator]Job <%v> is timeout, Re-add to pendingJobList\n", job)
+		//log.Printf("[Coordinator]Job <%v> is timeout, Re-add to pendingJobList\n", job)
 	}
 }
 
 func (c *Coordinator) monitorCoordinatorStatus() {
 	for {
-		log.Printf(c.getCoordinatorStatus())
+		//log.Printf(c.getCoordinatorStatus())
 		time.Sleep(5 * time.Second)
 	}
 }

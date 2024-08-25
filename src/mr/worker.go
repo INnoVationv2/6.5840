@@ -55,7 +55,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		worker.getJob()
 
 		if worker.job.JobType == Wait {
-			log.Printf("[Worker %d]Job Type Is Wait, Sleep 1 Seconds To Request Job.\n", worker.id)
+			//log.Printf("[Worker %d]Job Type Is Wait, Sleep 1 Seconds To Request Job.\n", worker.id)
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -77,7 +77,7 @@ func (w *_Worker) init() {
 	w.id = reply.Number
 	w.nReduce = reply.NReduce
 
-	log.Printf("[Worker %d]Worker Start.\n", w.id)
+	//log.Printf("[Worker %d]Worker Start.\n", w.id)
 }
 
 // Get Job From Coordinator
@@ -96,7 +96,7 @@ func (w *_Worker) getJob() {
 	w.connFail = 0
 
 	if job.JobType == Exist {
-		log.Printf("[Worker %d]All Job Are Complete, Worker will exist", w.id)
+		//log.Printf("[Worker %d]All Job Are Complete, Worker will exist", w.id)
 		os.Exit(0)
 	}
 
@@ -124,7 +124,7 @@ func (w *_Worker) getJobIds() {
 	}
 	w.jobIds = reply.JobIds
 
-	log.Printf("[Worker %d]Worker Start.\n", w.id)
+	//log.Printf("[Worker %d]Worker Start.\n", w.id)
 }
 
 func (w *_Worker) loadFile() string {
@@ -257,7 +257,7 @@ func (w *_Worker) finishJob() {
 	if !ok {
 		log.Fatalf("[Worker %d]Worker/FinishJob() failed!\n", w.id)
 	}
-	log.Printf("[Worker %d]Job %v Finished.\n", w.id, job)
+	//log.Printf("[Worker %d]Job %v Finished.\n", w.id, job)
 }
 
 func call(rpcname string, args interface{}, reply interface{}) bool {
