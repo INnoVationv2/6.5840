@@ -30,9 +30,8 @@ type _Worker struct {
 
 	jobIds []int
 
-	job  Job
-	mapf func(string, string) []KeyValue
-	//reduceIdx int32
+	job     Job
+	mapf    func(string, string) []KeyValue
 	reducef func(string, []string) string
 }
 
@@ -74,20 +73,9 @@ func (w *_Worker) init() {
 	if !ok {
 		log.Fatalf("Worker/init() failed!\n")
 	}
+
 	w.id = reply.Number
 	w.nReduce = reply.NReduce
-
-	log.Printf("[Worker %d]Worker Start.\n", w.id)
-}
-
-func (w *_Worker) getWorkerList() {
-	args := WorkerIdArg{}
-	reply := JobIdListReply{}
-	ok := call("Coordinator.GetJobIdList", &args, &reply)
-	if !ok {
-		log.Fatalf("[Worker %d]Worker/init() failed!\n", w.id)
-	}
-	w.jobIds = reply.JobIds
 
 	log.Printf("[Worker %d]Worker Start.\n", w.id)
 }
@@ -107,13 +95,13 @@ func (w *_Worker) getJob() {
 	}
 	w.connFail = 0
 
-	job.WorkerId = w.id
-	w.job = job
-	if w.job.JobType == Exist {
+	if job.JobType == Exist {
 		log.Printf("[Worker %d]All Job Are Complete, Worker will exist", w.id)
 		os.Exit(0)
 	}
-	//log.Printf("[Worker %d]Get Job:%v.\n", w.id, w.job)
+
+	job.WorkerId = w.id
+	w.job = job
 }
 
 func (w *_Worker) handleJob() {
@@ -121,10 +109,22 @@ func (w *_Worker) handleJob() {
 		w.handleMap()
 	} else {
 		if len(w.jobIds) == 0 {
-			w.getWorkerList()
+			w.getJobIds()
 		}
 		w.handleReduce()
 	}
+}
+
+func (w *_Worker) getJobIds() {
+	args := WorkerIdArg{}
+	reply := JobIdListReply{}
+	ok := call("Coordinator.GetJobIdList", &args, &reply)
+	if !ok {
+		log.Fatalf("[Worker %d]Worker/init() failed!\n", w.id)
+	}
+	w.jobIds = reply.JobIds
+
+	log.Printf("[Worker %d]Worker Start.\n", w.id)
 }
 
 func (w *_Worker) loadFile() string {
@@ -184,7 +184,6 @@ func (w *_Worker) storeMapResult(kva []KeyValue) {
 		bucket := buckets[i]
 		filename := fmt.Sprintf("mr-%d-%d_", w.job.JobId, i)
 		file, _ := os.CreateTemp(".", filename)
-		//file, _ := os.Create(filename)
 		for _, elem := range bucket {
 			fmt.Fprintf(file, "%v %v\n", elem.Key, elem.Value)
 		}
@@ -202,7 +201,7 @@ func (w *_Worker) storeMapResult(kva []KeyValue) {
 }
 
 func (w *_Worker) handleReduce() {
-	log.Printf("[Worker %d]handleReduce:Start Handle Reduce Job:%v.\n", w.id, w.job)
+	//log.Printf("[Worker %d]handleReduce:Start Handle Reduce Job:%v.\n", w.id, w.job)
 
 	content := w.loadFile()
 	intermediate := handleReduceLoadFile(&content)
@@ -211,7 +210,6 @@ func (w *_Worker) handleReduce() {
 	filename := fmt.Sprintf("mr-out-%v_", w.job.JobName)
 	resultFile, _ := os.CreateTemp(".", filename)
 	w.job.ResultFile = append(w.job.ResultFile, resultFile.Name())
-	//resultFile, _ := os.Create(filename)
 	defer resultFile.Close()
 
 	var result []KeyValue
@@ -238,6 +236,7 @@ func (w *_Worker) handleReduce() {
 	//log.Printf("[Worker %d]handleReduce:Reduce Job %v Complete.\n", w.id, w.job)
 }
 
+// 读取Map阶段的KV对结果，将其还原为KeyValue格式
 func handleReduceLoadFile(content *string) []KeyValue {
 	var result []KeyValue
 	lines := strings.Split(*content, "\n")

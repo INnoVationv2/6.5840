@@ -21,10 +21,8 @@ type Coordinator struct {
 	reduceJobIds []int
 
 	mapJobPendingList    *HashSet
-	mapJobProcessingList *HashSet
-
-	reduceJobPendingList    *HashSet
-	reduceJobProcessingList *HashSet
+	reduceJobPendingList *HashSet
+	jobProcessingList    *HashSet
 }
 
 func (c *Coordinator) GetWorkerConf(arg *WorkerIdArg, reply *WorkerInitReply) error {
@@ -46,7 +44,7 @@ func (c *Coordinator) GetJob(arg *WorkerIdArg, jobReply *Job) error {
 
 	if c.Done() {
 		jobReply.JobType = Exist
-		log.Println("[Coordinator]All Job Are Complete, Will Ask Worker To Exit.")
+		log.Println("[Coordinator]All Job Are Complete, Ask All Worker Exit.")
 		return nil
 	}
 
@@ -55,13 +53,14 @@ func (c *Coordinator) GetJob(arg *WorkerIdArg, jobReply *Job) error {
 		log.Printf("[Coordinator]GetJob:Worker %d Request Job, But All Map Job Is Complete.\n", arg.WorkerId)
 		return nil
 	}
+
 	jobReply.JobId = job.JobId
 	jobReply.JobType = job.JobType
 	jobReply.JobName = job.JobName
 	jobReply.ResultFile = []string{}
-
 	jobPendingList.Remove(jobReply)
 	jobProcessingList.Add(*jobReply)
+
 	go c.timeoutMonitor(jobReply)
 	log.Printf("[Coordinator]GetJob:Worker %d Request Job, Dispatch Job:%v.\n", arg.WorkerId, jobReply)
 	log.Printf(c.getCoordinatorStatus())
@@ -70,6 +69,7 @@ func (c *Coordinator) GetJob(arg *WorkerIdArg, jobReply *Job) error {
 
 func (c *Coordinator) FinishJob(job *Job, reply *NilArg) error {
 	log.Printf("[Coordinator]FinishJob:Worker %d Finish Job:%v.\n", job.WorkerId, job.JobName)
+
 	jobProcessingList := c.getProcessingJobList()
 	jobPendingList := c.getPendingJobList()
 
@@ -105,8 +105,8 @@ func (c *Coordinator) server() {
 
 func (c *Coordinator) Done() bool {
 	ret := c.stage == Reduce &&
-		c.reduceJobPendingList.IsEmpty() &&
-		c.reduceJobProcessingList.IsEmpty()
+		c.getPendingJobList().IsEmpty() &&
+		c.getProcessingJobList().IsEmpty()
 	return ret
 }
 
@@ -119,11 +119,7 @@ func (c *Coordinator) getPendingJobList() *HashSet {
 }
 
 func (c *Coordinator) getProcessingJobList() *HashSet {
-	if c.stage == Map {
-		return c.mapJobProcessingList
-	} else {
-		return c.reduceJobProcessingList
-	}
+	return c.jobProcessingList
 }
 
 func (c *Coordinator) timeoutMonitor(job *Job) {
@@ -160,11 +156,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c.stage = Map
 	c.nReduce = int32(nReduce)
-	c.mapJobPendingList = NewHashSet()
-	c.mapJobProcessingList = NewHashSet()
-	c.reduceJobPendingList = NewHashSet()
-	c.reduceJobProcessingList = NewHashSet()
 	c.workerCnt = 0
+
+	c.mapJobPendingList = NewHashSet()
+	c.reduceJobPendingList = NewHashSet()
+	c.jobProcessingList = NewHashSet()
 
 	var job Job
 	for i := 0; i < len(files); i++ {
