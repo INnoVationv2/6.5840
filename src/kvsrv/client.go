@@ -2,13 +2,21 @@ package kvsrv
 
 import (
 	"6.5840/labrpc"
-	"log"
+	"sync/atomic"
 )
 import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
 	server *labrpc.ClientEnd
+
+	clientID int64
+	rpcCnt   int32
+}
+
+func (ck *Clerk) getRpcId() int32 {
+	id := atomic.AddInt32(&ck.rpcCnt, 1)
+	return id
 }
 
 func nrand() int64 {
@@ -21,45 +29,32 @@ func nrand() int64 {
 func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
+	ck.clientID = nrand()
 	return ck
 }
 
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-//
-// you can send an RPC with code like this:
-// ok := ck.server.Call("KVServer.Get", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{Key: key}
+	args := GetArgs{ClientID: ck.clientID, Key: key}
 	reply := GetReply{}
-	ok := ck.server.Call("KVServer.Get", &args, &reply)
-	if !ok {
-		log.Fatalf("[Client]Get(): call failed!\n")
+
+	ok := false
+	for !ok {
+		ok = ck.server.Call("KVServer.Get", &args, &reply)
 	}
 
 	return reply.Value
 }
 
-// shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.server.Call("KVServer."+op, &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
-	args := PutAppendArgs{Key: key, Value: value}
+	args := PutAppendArgs{ClientID: ck.clientID, ID: ck.getRpcId(), Key: key, Value: value}
 	reply := PutAppendReply{}
-	ok := ck.server.Call("KVServer."+op, &args, &reply)
-	if !ok {
-		log.Fatalf("[Client]PutAppend(): call failed!\n")
+
+	ok := false
+	for !ok {
+		ok = ck.server.Call("KVServer."+op, &args, &reply)
 	}
+
+	ck.Report(key)
 
 	return reply.Value
 }
@@ -68,7 +63,16 @@ func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
 
-// Append value to key's value and return that value
 func (ck *Clerk) Append(key string, value string) string {
 	return ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) Report(key string) {
+	args := ReportArgs{ClientID: ck.clientID, Key: key}
+	reply := ReportReply{}
+
+	ok := false
+	for !ok {
+		ok = ck.server.Call("KVServer.Report", &args, &reply)
+	}
 }
