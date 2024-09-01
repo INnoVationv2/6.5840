@@ -23,8 +23,7 @@ func (rf *Raft) sendHeartbeat() {
 
 	gap := time.Duration(100) * time.Millisecond
 	for !rf.killed() {
-		DPrintf("[%v %d %d_%d]%dth Send Heartbeat\n",
-			rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me, atomic.LoadInt32(&times))
+		DPrintf("[%s]%dth Send Heartbeat\n", rf.getServerDetail(), atomic.LoadInt32(&times))
 		if rf.getRole() != Leader {
 			return
 		}
@@ -37,7 +36,7 @@ func (rf *Raft) sendHeartbeat() {
 			go func() {
 				ok := rf.peers[idx].Call("Raft.Heartbeat", args, reply)
 				if !ok {
-					DPrintf("[%v %d %d_%d]%dth Send Heartbeat To %d Timeout\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me, atomic.LoadInt32(&times), idx)
+					DPrintf("[%s]%dth Send Heartbeat To %d Timeout\n", rf.getServerDetail(), atomic.LoadInt32(&times), idx)
 				}
 			}()
 		}
@@ -49,7 +48,7 @@ func (rf *Raft) sendHeartbeat() {
 func (rf *Raft) Heartbeat(args *HeartbeatArgs, reply *EmptyStruct) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%v %d %d_%d]Get Heartbeat:%v\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me, *args)
+	DPrintf("[%s]Get Heartbeat:%v\n", rf.getServerDetail(), *args)
 
 	if args.Term < rf.getCurrentTerm() {
 		return
@@ -62,7 +61,7 @@ func (rf *Raft) Heartbeat(args *HeartbeatArgs, reply *EmptyStruct) {
 		rf.setCurrentTerm(args.Term)
 		rf.setLeaderId(args.LeaderId)
 		rf.setVoteFor(args.LeaderId)
-		DPrintf("[%v %d %d_%d]Heartbeat Back To Follwer\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
+		DPrintf("[%s]Heartbeat Back To Follwer\n", rf.getRoleStr())
 		return
 	}
 }

@@ -6,31 +6,26 @@ import (
 )
 
 type RequestVoteArgs struct {
-	// Your data here (3A, 3B).
 	Term        int32
 	CandidateId int32
 }
 
-func (rf *Raft) buildRequestVoteArgs() *RequestVoteArgs {
+func (rf *Raft) buildRequestVoteArgs(term int32) *RequestVoteArgs {
 	return &RequestVoteArgs{
-		Term:        rf.getCurrentTerm(),
+		Term:        term,
 		CandidateId: rf.me,
 	}
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (3A).
 	Term        int32
 	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%v %d %d_%d]Get Vote Request:%v", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me, *args)
+	DPrintf("[%s]Get Vote Request:%v", rf.getServerDetail(), *args)
 
 	rf.setHeartbeat(true)
 	vote := true
@@ -38,17 +33,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		vote = false
 	} else if args.Term > rf.getCurrentTerm() {
 		vote = true
+		rf.setCurrentTerm(args.Term)
 		if rf.getRole() != Follower {
 			rf.setRole(Follower)
-			DPrintf("[%v %d %d_%d]RequestVote Back To Follower\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
+			DPrintf("[%s]RequestVote Back To Follower\n", rf.getServerDetail())
 		}
 	} else {
 		vote = rf.getVoteFor() == -1
 	}
 
-	log := fmt.Sprintf("[%v %d %d_%d]Get Vote Request:%v, ", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me, *args)
+	log := fmt.Sprintf("[%s]Get Vote Request:%v, ", rf.getServerDetail(), *args)
 	if vote {
-		rf.setCurrentTerm(args.Term)
 		rf.setVoteFor(args.CandidateId)
 		log += "Vote"
 	} else {
@@ -64,9 +59,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-// 随机超时时间
 func (rf *Raft) ticker() {
-	DPrintf("[%v %d %d_%d]Join To Cluster\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
+	DPrintf("[%s]Join To Cluster\n", rf.getServerDetail())
 
 	for !rf.killed() {
 		time.Sleep(getRandomTimeoutMs())
@@ -74,7 +68,7 @@ func (rf *Raft) ticker() {
 			continue
 		}
 
-		DPrintf("[%v %d %d_%d]Check If Timeout\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
+		DPrintf("[%s]Check If Timeout\n", rf.getServerDetail())
 		if rf.getHeartbeat() == false || rf.getVoteFor() == -1 {
 			rf.setRole(Candidate)
 			go rf.startElection()
@@ -82,52 +76,53 @@ func (rf *Raft) ticker() {
 		rf.setHeartbeat(false)
 	}
 
-	DPrintf("Server %d_%d Disconnect From Cluster\n", rf.name, rf.me)
+	DPrintf("[%s] Disconnect From Cluster\n", rf.getServerDetail())
 }
 
-// 开始新选举
 func (rf *Raft) startElection() {
+	rf.mu.Lock()
 	if rf.getRole() != Candidate {
+		rf.mu.Unlock()
 		return
 	}
-	rf.mu.Lock()
 	rf.setVoteFor(rf.me)
 	term := rf.incCurrentTerm()
-	args := rf.buildRequestVoteArgs()
+	args := rf.buildRequestVoteArgs(term)
 	rf.mu.Unlock()
 
-	DPrintf("[%v %d %d_%d]Start New Election\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
+	DPrintf("[%s]Start New Election\n", rf.getServerDetail())
 	voteReplyChan := make(chan *RequestVoteReply, len(rf.peers))
 	for idx := range rf.peers {
 		if int32(idx) == rf.me {
 			continue
 		}
-		DPrintf("[%v %d %d_%d]Send Request Vote To %d\n", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me, idx)
+		DPrintf("[%s]Send Request Vote To %d\n", rf.getServerDetail(), idx)
 		go rf.getRequestVote(idx, args, voteReplyChan)
 	}
 
 	voteCount, replyNum := int32(1), 0
-	for replyNum < len(rf.peers)-1 && !rf.killed() && rf.getRole() == Candidate && term == rf.getCurrentTerm() {
+	for replyNum < len(rf.peers)-1 && !rf.killed() &&
+		rf.getRole() == Candidate && term == rf.getCurrentTerm() {
 		replyNum++
 		select {
 		case reply := <-voteReplyChan:
-			if reply.VoteGranted == true {
-				voteCount++
-				if voteCount > int32(len(rf.peers)>>1) {
-					rf.mu.Lock()
-					rf.setRole(Leader)
-					rf.setLeaderId(rf.me)
-					rf.mu.Unlock()
-					DPrintf("[%v %d %d_%d]Get Majority Vote, Become Leader\n",
-						rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
-					go rf.sendHeartbeat()
-					return
-				}
+			if reply.VoteGranted == false {
+				continue
+			}
+			voteCount++
+			if voteCount > int32(len(rf.peers)>>1) {
+				rf.mu.Lock()
+				rf.setRole(Leader)
+				rf.setLeaderId(rf.me)
+				rf.mu.Unlock()
+				DPrintf("[%s]Get Majority Vote, Become Leader\n", rf.getServerDetail())
+				go rf.sendHeartbeat()
+				return
 			}
 		}
 	}
 
-	DPrintf("[Server %d_%d]Not Get Majority Vote\n", rf.name, rf.me)
+	DPrintf("[%s]Not Get Majority Vote\n", rf.getServerDetail())
 }
 
 func (rf *Raft) getRequestVote(idx int, args *RequestVoteArgs, voteReplies chan *RequestVoteReply) {

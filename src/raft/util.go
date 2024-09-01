@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"runtime"
@@ -39,4 +40,8 @@ func (rf *Raft) getRoleStr() string {
 	} else {
 		return "Follower "
 	}
+}
+
+func (rf *Raft) getServerDetail() string {
+	return fmt.Sprintf("%v %d %d_%d", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
 }
