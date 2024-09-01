@@ -8,9 +8,7 @@ package raft
 // test with the original before submitting.
 //
 
-import (
-	"testing"
-)
+import "testing"
 import "fmt"
 import "time"
 import "math/rand"
@@ -28,10 +26,8 @@ func TestInitialElection3A(t *testing.T) {
 
 	cfg.begin("Test (3A): initial election")
 
-	DPrintf("[TEST]Check One Leader")
 	// is a leader elected?
 	cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
@@ -43,17 +39,13 @@ func TestInitialElection3A(t *testing.T) {
 
 	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
-	DPrintf("[TEST]Check Term")
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
 	}
-	DPrintf("[TEST]PASS")
 
-	DPrintf("[TEST]Check One Leader")
 	// there should still be a leader.
 	cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
 	cfg.end()
 }
@@ -65,53 +57,35 @@ func TestReElection3A(t *testing.T) {
 
 	cfg.begin("Test (3A): election after network failure")
 
-	DPrintf("[TEST]Check One Leader")
 	leader1 := cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
-	DPrintf("[TEST]Leader %d Disconnect", leader1)
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
-	DPrintf("[TEST]Check One Leader")
 	cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
-	DPrintf("[TEST]Leader %d connect", leader1)
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader. and the old leader
 	// should switch to follower.
 	cfg.connect(leader1)
-	DPrintf("[TEST]Check One Leader")
 	leader2 := cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
-	DPrintf("[TEST]Leader %d Disconnect", leader2)
 	// if there's no quorum, no new leader should
 	// be elected.
 	cfg.disconnect(leader2)
-	DPrintf("[TEST]Server %d Disconnect", (leader2+1)%servers)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 
-	DPrintf("[TEST]Check No Leader")
 	// check that the one connected server
 	// does not think it is the leader.
 	cfg.checkNoLeader()
-	DPrintf("[TEST]PASS")
 
-	DPrintf("[TEST]Server %d Reconnect", (leader2+1)%servers)
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
-	DPrintf("[TEST]Check One Leader")
 	cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
-	DPrintf("[TEST]Leader %d connect", leader2)
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
-	DPrintf("[TEST]Check One Leader")
 	cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
 	cfg.end()
 }
@@ -123,9 +97,7 @@ func TestManyElections3A(t *testing.T) {
 
 	cfg.begin("Test (3A): multiple elections")
 
-	DPrintf("[TEST]Check 1 Leader")
 	cfg.checkOneLeader()
-	DPrintf("[TEST]PASS")
 
 	iters := 10
 	for ii := 1; ii < iters; ii++ {
@@ -137,25 +109,15 @@ func TestManyElections3A(t *testing.T) {
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
 
-		DPrintf("[TEST]Server %d Disconnect", i1)
-		DPrintf("[TEST]Server %d Disconnect", i2)
-		DPrintf("[TEST]Server %d Disconnect", i3)
-
-		DPrintf("[TEST]Check 1 Leader")
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
 		cfg.checkOneLeader()
-		DPrintf("[TEST]PASS")
 
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
-		DPrintf("[TEST]Server %d Reconnect", i1)
-		DPrintf("[TEST]Server %d Reconnect", i2)
-		DPrintf("[TEST]Server %d Reconnect", i3)
 	}
 
-	DPrintf("[TEST]Check 1 Leader")
 	cfg.checkOneLeader()
 
 	cfg.end()
