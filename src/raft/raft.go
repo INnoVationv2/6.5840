@@ -47,37 +47,54 @@ type ApplyMsg struct {
 }
 
 const (
-	Leader int32 = iota
-	Candidate
-	Follower
-)
+	LEADER int32 = iota
+	CANDIDATE
+	FOLLOWER
 
-type EmptyStruct struct{}
+	SYNCING
+	HEARTBEAT
+)
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int32               // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	majority  int32
+	persister *Persister // Object to hold this peer's persisted state
+	me        int32      // this peer's index into peers[]
+	dead      int32      // set by Kill()
 	name      int32
 
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	// Leader Election
-	role        int32
+	role      int32
+	leaderId  int32
+	heartbeat int32
+
 	currentTerm int32
 	votedFor    int32
-	leaderId    int32
-	heartbeat   int32
+	log         []LogEntry
+	logSz       int32
+
+	commitIndex int32
+	lastApplied int32
+
+	nextIndex  []int32
+	matchIndex []int32
+
+	lastSendTime []int64
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return int(rf.getCurrentTerm()), rf.getRole() == Leader
+	return int(rf.getCurrentTerm()), rf.getRole() == LEADER
+}
+
+func (rf *Raft) isLeader() bool {
+	return rf.getRole() == LEADER
 }
 
 // save Raft's persistent state to stable storage,
@@ -124,29 +141,6 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
-
-}
-
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (3B).
-
-	return index, term, isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -160,12 +154,29 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
 }
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+func (rf *Raft) turnToFollower(term int32) {
+	rf.setRole(FOLLOWER)
+	rf.setCurrentTerm(term)
+	rf.setVoteFor(-1)
+}
+
+func (rf *Raft) turnToLeader() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.setRole(LEADER)
+	rf.setLeaderId(rf.me)
+	logLen := int32(len(rf.log))
+	for peer := range rf.peers {
+		rf.nextIndex[peer] = logLen
+		rf.matchIndex[peer] = 0
+	}
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -181,20 +192,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
+	rf.majority = int32(len(rf.peers)/2 + 1)
 	rf.persister = persister
 	rf.me = int32(me)
-	rf.role = Follower
-	rf.votedFor = -1
 	rf.name = rand.Int31() % 100
 
-	// Your initialization code here (3A, 3B, 3C).
+	rf.role = FOLLOWER
+	rf.setHeartbeat(false)
+	rf.votedFor = -1
 
-	// initialize from state persisted before a crash
+	rf.log = append(rf.log, LogEntry{Term: 0, Command: nil})
+	rf.logSz = 1
+
+	peerNum := len(peers)
+	rf.nextIndex = make([]int32, peerNum)
+	for i := 0; i < peerNum; i++ {
+		rf.nextIndex[i] = 1
+	}
+	rf.matchIndex = make([]int32, peerNum)
+	rf.lastSendTime = make([]int64, peerNum)
+
 	rf.readPersist(persister.ReadRaftState())
-
-	// start ticker goroutine to start elections
 	go rf.ticker()
-	//go goRoutineNum()
-
 	return rf
 }
