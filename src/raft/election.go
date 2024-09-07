@@ -30,7 +30,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("[%s]Get Vote Request:%v\n", rf.getServerDetail(), *args)
-	//rf.resetElectionTimer()
 
 	currentTerm := rf.getCurrentTerm()
 	reply.Term = currentTerm

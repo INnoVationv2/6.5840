@@ -43,6 +43,13 @@ func min(x, y int32) int32 {
 	return y
 }
 
+func max(x, y int32) int32 {
+	if x >= y {
+		return x
+	}
+	return y
+}
+
 // 判断log1和log2是否一样新甚至更新
 func compareLog(LogIdx1, LogTerm1, LogIdx2, LogTerm2 int32) bool {
 	if LogTerm1 < LogTerm2 {
