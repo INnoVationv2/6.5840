@@ -83,7 +83,7 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 	term = int(currentTerm)
 	logEntry := rf.buildLogEntry(command, currentTerm)
 	rf.log = append(rf.log, *logEntry)
-	DPrintf("[%v]Append Log %v", rf.getServerDetail(), logEntry)
+	DPrintf("[%v]Append Log", rf.getServerDetail())
 
 	go rf.syncLogWithFollower()
 
@@ -185,6 +185,10 @@ func (rf *Raft) sendEntriesToFollower(idx int) bool {
 
 		// 接下来都是reply.Success = false
 		rf.mu.Lock()
+		if rf.killed() || rf.getRole() != LEADER {
+			return false
+		}
+
 		if reply.Term > rf.getCurrentTerm() {
 			DPrintf("[%v]Follower Term > Leader Term, Back To Follower\n", rf.getServerDetail())
 			rf.turnToFollower(reply.Term)
@@ -307,7 +311,7 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 func (rf *Raft) sendCommitedLogToTester(st, ed int32) {
 	msg := ApplyMsg{CommandValid: true}
 	for ; st <= ed; st++ {
-		DPrintf("[%v]Send Log %d:%v To Tester\n", rf.getServerDetail(), st, &rf.log[st])
+		DPrintf("[%v]Send Log %d To Tester\n", rf.getServerDetail(), st)
 		msg.CommandIndex = int(st)
 		msg.Command = rf.log[st].Command
 		rf.applyCh <- msg
