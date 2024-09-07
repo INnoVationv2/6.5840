@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"runtime"
 	"time"
 )
 
@@ -18,17 +17,8 @@ func DPrintf(format string, a ...interface{}) {
 }
 
 func getRandomTimeoutMs() time.Duration {
-	ms := 250 + (rand.Int63() % 150)
+	ms := 300 + (rand.Int63() % 200)
 	return time.Duration(ms) * time.Millisecond
-}
-
-func goRoutineNum() {
-	for {
-		select {
-		case <-time.After(time.Second / 3):
-			DPrintf("GoRoutime Number: %d", runtime.NumGoroutine())
-		}
-	}
 }
 
 func (rf *Raft) getRoleStr() string {
@@ -53,36 +43,14 @@ func min(x, y int32) int32 {
 	return y
 }
 
-func max(x, y int32) int32 {
-	if x >= y {
-		return x
-	}
-	return y
-}
-
-func getCurrentTime() int64 {
-	return time.Now().UnixMilli()
-}
-
-func calGap(lastTime int64) int64 {
-	return getCurrentTime() - lastTime
-}
-
-// 判断log1是不是和log2一样新甚至更新
+// 判断log1和log2是否一样新甚至更新
 func compareLog(LogIdx1, LogTerm1, LogIdx2, LogTerm2 int32) bool {
-	if LogTerm1 > LogTerm2 {
+	if LogTerm1 < LogTerm2 {
+		return false
+	} else if LogTerm1 > LogTerm2 {
 		return true
-	}
-	if LogTerm1 == LogTerm2 &&
-		LogIdx1 >= LogIdx2 {
+	} else if LogIdx1 >= LogIdx2 {
 		return true
 	}
 	return false
-}
-
-func boolToVote(b bool) string {
-	if b {
-		return "Vote"
-	}
-	return "Not Vote"
 }

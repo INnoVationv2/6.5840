@@ -50,25 +50,21 @@ const (
 	LEADER int32 = iota
 	CANDIDATE
 	FOLLOWER
-
-	SYNCING
-	HEARTBEAT
 )
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	majority  int32
-	persister *Persister // Object to hold this peer's persisted state
-	me        int32      // this peer's index into peers[]
-	dead      int32      // set by Kill()
+	persister *Persister          // Object to hold this peer's persisted state
+	me        int32               // this peer's index into peers[]
+	dead      int32               // set by Kill()
 	name      int32
 
-	// Your data here (3A, 3B, 3C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
-	// Leader Election
+	majority   int32
+	applyCh    chan ApplyMsg
+	logSyncing int32
+
 	role      int32
 	leaderId  int32
 	heartbeat int32
@@ -76,15 +72,12 @@ type Raft struct {
 	currentTerm int32
 	votedFor    int32
 	log         []LogEntry
-	logSz       int32
 
 	commitIndex int32
 	lastApplied int32
 
 	nextIndex  []int32
 	matchIndex []int32
-
-	lastSendTime []int64
 }
 
 // return currentTerm and whether this server
@@ -164,18 +157,16 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) turnToFollower(term int32) {
 	rf.setRole(FOLLOWER)
 	rf.setCurrentTerm(term)
-	rf.setVoteFor(-1)
 }
 
 func (rf *Raft) turnToLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.setRole(LEADER)
-	rf.setLeaderId(rf.me)
-	logLen := int32(len(rf.log))
-	for peer := range rf.peers {
-		rf.nextIndex[peer] = logLen
-		rf.matchIndex[peer] = 0
+	rf.setVoteFor(rf.me)
+	for idx := range rf.peers {
+		rf.setNextIndex(idx, int32(len(rf.log)))
+		rf.setMatchIndex(idx, 0)
 	}
 }
 
@@ -191,18 +182,16 @@ func (rf *Raft) turnToLeader() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
+	rf.applyCh = applyCh
 	rf.peers = peers
-	rf.majority = int32(len(rf.peers)/2 + 1)
 	rf.persister = persister
 	rf.me = int32(me)
 	rf.name = rand.Int31() % 100
 
+	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER
-	rf.setHeartbeat(false)
 	rf.votedFor = -1
-
 	rf.log = append(rf.log, LogEntry{Term: 0, Command: nil})
-	rf.logSz = 1
 
 	peerNum := len(peers)
 	rf.nextIndex = make([]int32, peerNum)
@@ -210,7 +199,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.nextIndex[i] = 1
 	}
 	rf.matchIndex = make([]int32, peerNum)
-	rf.lastSendTime = make([]int64, peerNum)
 
 	rf.readPersist(persister.ReadRaftState())
 	go rf.ticker()
