@@ -1,6 +1,9 @@
 package raft
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
 
 func (rf *Raft) getElectionTimer() int32 {
 	return atomic.LoadInt32(&rf.heartbeat)
@@ -33,14 +36,6 @@ func (rf *Raft) getRole() int32 {
 func (rf *Raft) setRole(newRole int32) {
 	atomic.StoreInt32(&rf.role, newRole)
 }
-
-//func (rf *Raft) getLeaderId() int32 {
-//	return atomic.LoadInt32(&rf.leaderId)
-//}
-//
-//func (rf *Raft) setLeaderId(newId int32) {
-//	atomic.StoreInt32(&rf.leaderId, newId)
-//}
 
 func (rf *Raft) getVoteFor() int32 {
 	return atomic.LoadInt32(&rf.votedFor)
@@ -78,10 +73,20 @@ func (rf *Raft) setCommitIndex(commitIndex int32) {
 	atomic.StoreInt32(&rf.commitIndex, commitIndex)
 }
 
-func (rf *Raft) openLogSyncing() bool {
-	return atomic.CompareAndSwapInt32(&rf.logSyncing, 0, 1)
+//func (rf *Raft) openLogSyncing() bool {
+//	return atomic.CompareAndSwapInt32(&rf.logSyncing, 0, 1)
+//}
+//
+//func (rf *Raft) closeLogSyncing() {
+//	atomic.StoreInt32(&rf.logSyncing, 0)
+//}
+
+func (rf *Raft) resetHeartbeatTimer(idx int) {
+	atomic.StoreInt64(&rf.lastSendTime[idx], getCurrentTime())
 }
 
-func (rf *Raft) closeLogSyncing() {
-	atomic.StoreInt32(&rf.logSyncing, 0)
+func (rf *Raft) heartbeatTimeout(idx int) bool {
+	gap := time.Millisecond * 100
+	lastSendTime := atomic.LoadInt64(&rf.lastSendTime[idx])
+	return getCurrentTime()-lastSendTime >= gap.Milliseconds()
 }
