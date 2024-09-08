@@ -18,6 +18,9 @@ package raft
 //
 
 import (
+	"6.5840/labgob"
+	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -61,12 +64,12 @@ type Raft struct {
 	dead      int32               // set by Kill()
 	name      int32
 
-	majority   int32
-	applyCh    chan ApplyMsg
-	logSyncing int32
+	lastSendTime []int64
+
+	majority int32
+	applyCh  chan ApplyMsg
 
 	role      int32
-	leaderId  int32
 	heartbeat int32
 
 	currentTerm int32
@@ -98,14 +101,16 @@ func (rf *Raft) isLeader() bool {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil ||
+		e.Encode(rf.votedFor) != nil ||
+		e.Encode(rf.log) != nil ||
+		e.Encode(rf.role) != nil {
+		log.Fatalf("[%v]persist Failed", rf.getServerDetail())
+	}
+	raftState := w.Bytes()
+	rf.persister.Save(raftState, nil)
 }
 
 // restore previously persisted state.
@@ -113,19 +118,17 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if d.Decode(&rf.currentTerm) != nil ||
+		d.Decode(&rf.votedFor) != nil ||
+		d.Decode(&rf.log) != nil ||
+		d.Decode(&rf.role) != nil {
+		log.Fatalf("[%v]readPersist Failed", rf.getServerDetail())
+	}
+	DPrintf("[%v]Read Persist", rf.getServerDetail())
 }
 
 // the service says it has created a snapshot that has
@@ -136,15 +139,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
 }
 
-// the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
-// check whether Kill() has been called. the use of atomic avoids the
-// need for a lock.
-//
-// the issue is that long-running goroutines use memory and may chew
-// up CPU time, perhaps causing later tests to fail and generating
-// confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 }
@@ -154,14 +148,14 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) turnToFollower(term int32) {
+func (rf *Raft) turnToFollower(term int32, votedFor int32) {
+	rf.setVoteFor(votedFor)
 	rf.setRole(FOLLOWER)
 	rf.setCurrentTerm(term)
 }
 
 func (rf *Raft) turnToLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// Leader必须由Candidate转变而来
 	rf.setRole(LEADER)
 	rf.setVoteFor(rf.me)
 	for idx := range rf.peers {
@@ -187,6 +181,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = int32(me)
 	rf.name = rand.Int31() % 100
+	rf.enableElectionTimer()
 
 	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER
@@ -194,6 +189,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = append(rf.log, LogEntry{Term: 0, Command: nil})
 
 	peerNum := len(peers)
+	rf.lastSendTime = make([]int64, peerNum)
 	rf.nextIndex = make([]int32, peerNum)
 	for i := 0; i < peerNum; i++ {
 		rf.nextIndex[i] = 1

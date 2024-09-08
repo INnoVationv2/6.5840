@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sort"
 	"time"
 )
 
@@ -17,7 +18,7 @@ func DPrintf(format string, a ...interface{}) {
 }
 
 func getRandomTimeoutMs() time.Duration {
-	ms := 300 + (rand.Int63() % 200)
+	ms := 300 + (rand.Int63() % 150)
 	return time.Duration(ms) * time.Millisecond
 }
 
@@ -60,4 +61,20 @@ func compareLog(LogIdx1, LogTerm1, LogIdx2, LogTerm2 int32) bool {
 		return true
 	}
 	return false
+}
+
+func (rf *Raft) findCommitIndex() int32 {
+	var slice []int
+	for idx, val := range rf.matchIndex {
+		if idx == int(rf.me) {
+			continue
+		}
+		slice = append(slice, int(val))
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(slice)))
+	return int32(slice[rf.majority-1])
+}
+
+func getCurrentTime() int64 {
+	return time.Now().UnixMilli()
 }
