@@ -9,11 +9,11 @@ func (rf *Raft) getElectionTimer() int32 {
 	return atomic.LoadInt32(&rf.heartbeat)
 }
 
-func (rf *Raft) resetElectionTimer() {
+func (rf *Raft) closeElectionTimer() {
 	atomic.StoreInt32(&rf.heartbeat, 0)
 }
 
-func (rf *Raft) enableElectionTimer() {
+func (rf *Raft) startElectionTimer() {
 	atomic.StoreInt32(&rf.heartbeat, 1)
 }
 
@@ -72,14 +72,6 @@ func (rf *Raft) getCommitIndex() int32 {
 func (rf *Raft) setCommitIndex(commitIndex int32) {
 	atomic.StoreInt32(&rf.commitIndex, commitIndex)
 }
-
-//func (rf *Raft) openLogSyncing() bool {
-//	return atomic.CompareAndSwapInt32(&rf.logSyncing, 0, 1)
-//}
-//
-//func (rf *Raft) closeLogSyncing() {
-//	atomic.StoreInt32(&rf.logSyncing, 0)
-//}
 
 func (rf *Raft) resetHeartbeatTimer(idx int) {
 	atomic.StoreInt64(&rf.lastSendTime[idx], getCurrentTime())
