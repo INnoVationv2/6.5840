@@ -149,9 +149,9 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) turnToFollower(term int32, votedFor int32) {
-	rf.setVoteFor(votedFor)
 	rf.setRole(FOLLOWER)
 	rf.setCurrentTerm(term)
+	rf.setVoteFor(votedFor)
 }
 
 func (rf *Raft) turnToLeader() {
@@ -181,7 +181,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = int32(me)
 	rf.name = rand.Int31() % 100
-	rf.enableElectionTimer()
+	rf.startElectionTimer()
 
 	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER

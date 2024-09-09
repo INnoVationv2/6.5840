@@ -51,16 +51,12 @@ func max(x, y int32) int32 {
 	return y
 }
 
-// 判断log1和log2是否一样新甚至更新
+// 判断log1和log2是否至少一样新或者更新
 func compareLog(LogIdx1, LogTerm1, LogIdx2, LogTerm2 int32) bool {
-	if LogTerm1 < LogTerm2 {
-		return false
-	} else if LogTerm1 > LogTerm2 {
-		return true
-	} else if LogIdx1 >= LogIdx2 {
-		return true
+	if LogTerm1 != LogTerm2 {
+		return LogTerm1 > LogTerm2
 	}
-	return false
+	return LogIdx1 >= LogIdx2
 }
 
 func (rf *Raft) findCommitIndex() int32 {
