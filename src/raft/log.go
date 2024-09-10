@@ -108,6 +108,7 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 			var status int
 			for !rf.killed() && rf.isLeader() && term == rf.getCurrentTerm() {
 				status = rf.sendEntriesToFollower(idx, false)
+				// 如果是超时发送失败, 需要持续重试
 				if status == TIMEOUT {
 					DPrintf("[%v]Send AppendEntries RPC To %d Timeout, ReSending", rf.getServerDetail(), idx)
 					continue
@@ -120,13 +121,10 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 		}()
 	}
 
-	majority := rf.majority
-	for majority > 0 {
+	for majority := rf.majority; majority > 0; majority-- {
 		select {
 		case status := <-jobChan:
-			if status == COMPLETE {
-				majority--
-			} else if status == ERROR {
+			if status != COMPLETE {
 				return
 			}
 		}
@@ -154,7 +152,6 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 	if commitIndex > rf.lastApplied {
 		DPrintf("[%v]Apply %d~%d Tester\n", rf.getServerDetail(), rf.lastApplied+1, commitIndex)
 		rf.sendCommitedLogToTester()
-		rf.lastApplied = commitIndex
 	}
 }
 
@@ -201,8 +198,8 @@ func (rf *Raft) sendEntriesToFollower(idx int, heartbeat bool) int {
 			rf.mu.Unlock()
 			return COMPLETE
 		}
-
 		// 接下来都是reply.Success = false
+
 		if reply.Term > rf.getCurrentTerm() {
 			DPrintf("[%v]Follower Term > My Term, Back To Follower\n", serverDetail)
 			rf.turnToFollower(reply.Term, -1)
@@ -212,7 +209,7 @@ func (rf *Raft) sendEntriesToFollower(idx int, heartbeat bool) int {
 		}
 
 		if reply.XTerm == -1 && reply.XIndex == -1 {
-			// 日志太短
+			// Follower日志比Leader短
 			rf.setNextIndex(idx, reply.XLen)
 		} else {
 			index := max(int32(len(rf.log)-1), 1)
@@ -244,7 +241,7 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		return
 	}
 
-	// 每条记录都用来更新Heartbeat
+	// 重置选举超时器
 	rf.closeElectionTimer()
 
 	if args.Term > term {
@@ -263,7 +260,8 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		rf.persist()
 	}
 
-	// 没有与prevLogIndex、prevLogTerm匹配的项: False
+	// 没有与prevLogIndex、prevLogTerm匹配的项
+	// 返回false
 	logSz := int32(len(rf.log))
 	if args.PrevLogIndex >= logSz ||
 		rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {

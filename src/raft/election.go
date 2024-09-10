@@ -50,14 +50,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	lastLogIdx, lastLogTerm := int32(0), int32(0)
-	logLen := len(rf.log)
-	if logLen != 0 {
-		lastLogIdx = int32(logLen - 1)
-		lastLogTerm = rf.log[lastLogIdx].Term
-	}
-	if !compareLog(args.LastLogIndex, args.LastLogTerm,
-		lastLogIdx, lastLogTerm) {
+	//lastLogIdx, lastLogTerm := int32(0), int32(0)
+	//logLen := len(rf.log)
+	//if logLen != 0 {
+	//	lastLogIdx = int32(logLen - 1)
+	//	lastLogTerm = rf.log[lastLogIdx].Term
+	//}
+	// 比较日志，只投给日志至少和自己一样新的Candidate
+	lastLogIdx := int32(len(rf.log) - 1)
+	lastLogTerm := rf.log[lastLogIdx].Term
+	if !compareLog(args.LastLogIndex, args.LastLogTerm, lastLogIdx, lastLogTerm) {
 		DPrintf("[%s]RequestVote Candidate Log Is Too Old", rf.getServerDetail())
 		return
 	}
@@ -70,16 +72,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) ticker() {
 	DPrintf("[%s]Join To Cluster", rf.getServerDetail())
-	times := 0
 	for !rf.killed() {
 		time.Sleep(getRandomTimeoutMs())
-		times++
-		DPrintf("[%v]%dth Check Timtout.", rf.getServerDetail(), times)
-
 		if rf.isLeader() {
 			continue
 		}
 
+		DPrintf("[%v]Check Timtout.", rf.getServerDetail())
 		if rf.getElectionTimer() == 0 {
 			rf.startElectionTimer()
 			continue
@@ -101,21 +100,6 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) startElection(args *RequestVoteArgs) {
-	//rf.mu.Lock()
-	if args.Term != rf.getCurrentTerm() || rf.getRole() != CANDIDATE {
-		DPrintf("[%s]Role!=Candidate, Stop New Election", rf.getServerDetail())
-		//rf.mu.Unlock()
-		//return
-	}
-
-	//term = rf.incCurrentTerm()
-	//rf.setVoteFor(rf.me)
-	//rf.persist()
-
-	//rf.resetElectionTimer()
-	//args := rf.buildRequestVoteArgs(term)
-	//rf.mu.Unlock()
-
 	DPrintf("[%s]Timeout!!! Start New Election", rf.getServerDetail())
 	voteReplyChan := make(chan *RequestVoteReply, len(rf.peers))
 	for idx := range rf.peers {
@@ -160,7 +144,7 @@ func (rf *Raft) startElection(args *RequestVoteArgs) {
 			} else {
 				DPrintf("[%v]%d Not Vote", rf.getServerDetail(), reply.ServerIDx)
 				if reply.Term > rf.getCurrentTerm() {
-					DPrintf("[%s]startElection %d Term>CurrentTerm, Back To Follower", rf.getServerDetail(), reply.ServerIDx)
+					DPrintf("[%s]Server %d's Term>CurrentTerm, Back To Follower", rf.getServerDetail(), reply.ServerIDx)
 					rf.turnToFollower(reply.Term, reply.ServerIDx)
 					rf.persist()
 				}
