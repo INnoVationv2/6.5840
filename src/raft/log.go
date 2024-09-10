@@ -65,7 +65,9 @@ func (rf *Raft) buildAppendEntriesArgs(args *AppendEntriesArgs, idx int, heartbe
 	args.PrevLogIndex = prevLogIdx
 	args.PrevLogTerm = rf.log[prevLogIdx].Term
 	if !heartbeat {
-		args.Entries = rf.log[nextIdx:]
+		log := rf.log[nextIdx:]
+		args.Entries = make([]LogEntry, len(log))
+		copy(args.Entries, log)
 	}
 }
 
@@ -132,8 +134,6 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 func (rf *Raft) updateCommitIndex(term int32) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	//DPrintf("[%v]Send Log Complete, Start Update CommitIndex", rf.getServerDetail())
 
 	if !rf.isLeader() || rf.killed() || term != rf.getCurrentTerm() {
 		DPrintf("[%v]Sync Log Fail", rf.getServerDetail())
