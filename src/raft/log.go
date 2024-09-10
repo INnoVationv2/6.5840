@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -98,7 +99,8 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 	serverDetail := rf.getServerDetail()
 	DPrintf("[%v]Start Sync Log", serverDetail)
 
-	jobChan := make(chan int)
+	//jobChan := make(chan int)
+	majority := rf.majority
 	for idx := range rf.peers {
 		if int32(idx) == rf.me {
 			continue
@@ -115,25 +117,23 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 				}
 				break
 			}
-			DPrintf("[%v]Send AppendEntries RPC To %d Complete, Killed:%v, isLeader:%v, term:%d",
-				rf.getServerDetail(), idx, rf.killed(), rf.isLeader(), term)
-			jobChan <- status
+			DPrintf("[%v]Send AppendEntries RPC To %d Complete, Status:%v, Killed:%v, isLeader:%v, term:%d",
+				rf.getServerDetail(), idx, status, rf.killed(), rf.isLeader(), term)
+			if status == COMPLETE {
+				if atomic.AddInt32(&majority, -1) == 0 {
+					DPrintf("[%v] Update CommitIndex", rf.getServerDetail())
+					rf.updateCommitIndex(term)
+				}
+			}
 		}()
 	}
+}
 
-	for majority := rf.majority; majority > 0; majority-- {
-		select {
-		case status := <-jobChan:
-			if status != COMPLETE {
-				return
-			}
-		}
-	}
-
+func (rf *Raft) updateCommitIndex(term int32) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	DPrintf("[%v]Send Log Complete, Start Update CommitIndex", rf.getServerDetail())
+	//DPrintf("[%v]Send Log Complete, Start Update CommitIndex", rf.getServerDetail())
 
 	if !rf.isLeader() || rf.killed() || term != rf.getCurrentTerm() {
 		DPrintf("[%v]Sync Log Fail", rf.getServerDetail())
@@ -191,8 +191,8 @@ func (rf *Raft) sendEntriesToFollower(idx int, heartbeat bool) int {
 			DPrintf("[%v]Success Send %d Log Entry To %d", serverDetail, len(args.Entries), idx)
 			if len(args.Entries) != 0 {
 				index := args.PrevLogIndex + int32(len(args.Entries))
-				rf.setNextIndex(idx, index+1)
-				rf.setMatchIndex(idx, index)
+				rf.setNextIndex(idx, max(rf.getNextIndex(idx), index+1))
+				rf.setMatchIndex(idx, max(rf.getMatchIndex(idx), index))
 				DPrintf("[%v]Update %d nextIndex To %d, matchIndex To %d", serverDetail, idx, index+1, index)
 			}
 			rf.mu.Unlock()
