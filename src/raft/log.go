@@ -297,8 +297,10 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		}
 		// 截断args.Entries
 		args.Entries = args.Entries[j:]
-		rf.log = append(rf.log, args.Entries...)
-		rf.persist()
+		if len(args.Entries) != 0 {
+			rf.log = append(rf.log, args.Entries...)
+			rf.persist()
+		}
 		DPrintf("[%v]Append %d Log, LogSz:%d", rf.getServerDetail(), len(args.Entries), len(rf.log))
 	}
 

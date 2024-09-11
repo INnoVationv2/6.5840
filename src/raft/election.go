@@ -50,12 +50,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	//lastLogIdx, lastLogTerm := int32(0), int32(0)
-	//logLen := len(rf.log)
-	//if logLen != 0 {
-	//	lastLogIdx = int32(logLen - 1)
-	//	lastLogTerm = rf.log[lastLogIdx].Term
-	//}
 	// 比较日志，只投给日志至少和自己一样新的Candidate
 	lastLogIdx := int32(len(rf.log) - 1)
 	lastLogTerm := rf.log[lastLogIdx].Term
@@ -145,8 +139,10 @@ func (rf *Raft) startElection(args *RequestVoteArgs) {
 				DPrintf("[%v]%d Not Vote", rf.getServerDetail(), reply.ServerIDx)
 				if reply.Term > rf.getCurrentTerm() {
 					DPrintf("[%s]Server %d's Term>CurrentTerm, Back To Follower", rf.getServerDetail(), reply.ServerIDx)
-					rf.turnToFollower(reply.Term, reply.ServerIDx)
+					rf.turnToFollower(reply.Term, -1)
 					rf.persist()
+					rf.mu.Unlock()
+					return
 				}
 			}
 			rf.mu.Unlock()
