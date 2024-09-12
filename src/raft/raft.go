@@ -66,8 +66,9 @@ type Raft struct {
 
 	lastSendTime []int64
 
-	majority int32
-	applyCh  chan ApplyMsg
+	majority     int32
+	applyCh      chan ApplyMsg
+	applyChMutex sync.Mutex
 
 	role      int32
 	heartbeat int32
@@ -81,6 +82,9 @@ type Raft struct {
 
 	nextIndex  []int32
 	matchIndex []int32
+
+	snapshot       *Snapshot
+	snapshotStatus int32
 }
 
 // return currentTerm and whether this server
@@ -93,50 +97,54 @@ func (rf *Raft) isLeader() bool {
 	return rf.getRole() == LEADER
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
+	buf := new(bytes.Buffer)
+	e := labgob.NewEncoder(buf)
 	if e.Encode(rf.currentTerm) != nil ||
 		e.Encode(rf.votedFor) != nil ||
 		e.Encode(rf.log) != nil ||
 		e.Encode(rf.role) != nil {
-		log.Fatalf("[%v]persist Failed", rf.getServerDetail())
+		log.Fatalf("[%v]Encode Raft State Failed", rf.getServerDetail())
 	}
-	raftState := w.Bytes()
-	rf.persister.Save(raftState, nil)
+
+	var snapshot []byte
+	if rf.snapshot != nil {
+		if e.Encode(int(rf.snapshot.LastIncludedIndex)) != nil ||
+			e.Encode(int(rf.snapshot.LastIncludedTerm)) != nil {
+			log.Fatalf("[%v]Encode Raft State Failed", rf.getServerDetail())
+		}
+		snapshot = rf.snapshot.Data
+	}
+
+	rf.persister.Save(buf.Bytes(), snapshot)
 }
 
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
+	if raftState == nil || len(raftState) == 0 {
 		return
 	}
-	r := bytes.NewBuffer(data)
+
+	r := bytes.NewBuffer(raftState)
 	d := labgob.NewDecoder(r)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if d.Decode(&rf.currentTerm) != nil ||
 		d.Decode(&rf.votedFor) != nil ||
 		d.Decode(&rf.log) != nil ||
 		d.Decode(&rf.role) != nil {
-		log.Fatalf("[%v]readPersist Failed", rf.getServerDetail())
+		log.Fatalf("[%v]Read Raft State Failed", rf.getServerDetail())
 	}
-	DPrintf("[%v]Read Persist", rf.getServerDetail())
-}
 
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
+	if snapshot != nil && len(snapshot) > 0 {
+		var lastIncludedIndex int
+		var lastIncludedTerm int
+		if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
+			log.Fatalf("[%v]Read Snanpshot Failed", rf.getServerDetail())
+		}
+		rf.snapshot = &Snapshot{
+			LastIncludedIndex: int32(lastIncludedIndex),
+			LastIncludedTerm:  int32(lastIncludedTerm),
+			Data:              snapshot,
+		}
+	}
 }
 
 func (rf *Raft) Kill() {
@@ -164,15 +172,6 @@ func (rf *Raft) turnToLeader() {
 	}
 }
 
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -186,7 +185,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER
 	rf.votedFor = -1
-	rf.log = append(rf.log, LogEntry{Term: 0, Command: nil})
+	rf.log = append(rf.log, LogEntry{Term: 0, Index: 0, Command: nil})
 
 	peerNum := len(peers)
 	rf.lastSendTime = make([]int64, peerNum)
@@ -195,8 +194,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.nextIndex[i] = 1
 	}
 	rf.matchIndex = make([]int32, peerNum)
-
-	rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 	go rf.ticker()
 	return rf
 }
