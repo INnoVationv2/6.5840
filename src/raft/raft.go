@@ -144,6 +144,7 @@ func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
 			LastIncludedTerm:  int32(lastIncludedTerm),
 			Data:              snapshot,
 		}
+		rf.lastApplied = rf.snapshot.LastIncludedIndex
 	}
 }
 

@@ -25,17 +25,20 @@ type Snapshot struct {
 }
 
 func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
-	snapshot := &InstallSnapshot{}
-	snapshot.Term = rf.currentTerm
-	snapshot.LeaderId = rf.me
-	snapshot.LastIncludedIndex = rf.snapshot.LastIncludedIndex
-	snapshot.LastIncludedTerm = rf.snapshot.LastIncludedTerm
-	snapshot.Data = make([]byte, len(rf.snapshot.Data))
+	snapshot := &InstallSnapshot{
+		Term:              rf.getCurrentTerm(),
+		LeaderId:          rf.me,
+		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
+		LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
+		Data:              make([]byte, len(rf.snapshot.Data)),
+	}
 	copy(snapshot.Data, rf.snapshot.Data)
 	return snapshot
 }
 
 func (rf *Raft) sendSnapshotToFollower(serverNo int, args *InstallSnapshot) int {
+	rf.resetHeartbeatTimer(serverNo)
+
 	DPrintf("[%v]Send Snapshot to follower %d", rf.getServerDetail(), serverNo)
 	reply := &InstallSnapshotReply{}
 	ok := rf.peers[serverNo].Call("Raft.AcceptSnapshot", args, reply)
@@ -71,14 +74,16 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("[%v]Received Snapshot %v", rf.getServerDetail(), args)
-	reply.Term = rf.currentTerm
-	if args.Term < rf.getCurrentTerm() {
+	term := rf.getCurrentTerm()
+	reply.Term = term
+	if args.Term < term {
 		return
 	}
+	rf.closeElectionTimer()
 
-	if args.Term > rf.getCurrentTerm() || rf.getRole() == CANDIDATE {
+	if args.Term > term || rf.getRole() == CANDIDATE {
 		DPrintf("[%v]Received Snapshot From %d, Term:%d > My Term:%d, Turn to follower", rf.getServerDetail(),
-			args.Term, rf.getCurrentTerm(), args.LeaderId)
+			args.Term, term, args.LeaderId)
 		rf.turnToFollower(args.Term, args.LeaderId)
 		rf.persist()
 	}
@@ -101,24 +106,37 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	}
 	rf.log = rf.log[idx+1:]
 	rf.persist()
+	DPrintf("[%v]LastIncludedIndex:%d, LastApplied:%d", rf.getServerDetail(), rf.snapshot.LastIncludedIndex, rf.lastApplied)
+	if rf.snapshot.LastIncludedIndex > rf.lastApplied {
+		DPrintf("[%v]Send Snapshot To Tester", rf.getServerDetail())
+		rf.sendSnapshotToTester(rf.snapshot)
+	}
 	DPrintf("[%v]After Build Snapshot, Log Length:%d, LastLogIdx:%d", rf.getServerDetail(), len(rf.log), rf.getLastLogIndex())
 }
 
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
+func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
+	msg := ApplyMsg{
+		SnapshotValid: true,
+		SnapshotIndex: int(snapshot.LastIncludedIndex),
+		SnapshotTerm:  int(snapshot.LastIncludedTerm),
+		Snapshot:      snapshot.Data,
+	}
+	rf.applyCh <- msg
+	rf.lastApplied = max(rf.snapshot.LastIncludedIndex, rf.lastApplied)
+	DPrintf("[%v]Success Send Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+}
+
 // 只有在提交Command到Chan时，SnapShot才可能被调用
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("[%v]Build Snapshot, Index:%d, Sz:%d", rf.getServerDetail(), index, len(snapshot))
-	snap := &Snapshot{}
 
 	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= int32(index) {
 		return
 	}
 
+	snap := &Snapshot{}
 	snap.LastIncludedIndex = int32(index)
 	snap.LastIncludedTerm = rf.getLogTermByIdx(int32(index))
 	snap.Data = make([]byte, len(snapshot))
@@ -130,9 +148,5 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapshot = snap
 	rf.persist()
 
-	DPrintf("[%v]Remov Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, SnapSize:%d",
-		rf.getServerDetail(), rf.getLastLogIndex(), rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.snapshot.Data))
-	for idx, entry := range rf.log {
-		DPrintf("    [%v]Snapshot Idx:%d LogIndex:%d", rf.getServerDetail(), idx, entry.Index)
-	}
+	DPrintf("[%v]Remov Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, SnapSize:%d", rf.getServerDetail(), rf.getLastLogIndex(), rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.snapshot.Data))
 }

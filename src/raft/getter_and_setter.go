@@ -115,3 +115,11 @@ func (rf *Raft) getLogTermByIdx(idx int32) int32 {
 	}
 	return rf.log[pos].Term
 }
+
+func (rf *Raft) getLastApplied() int32 {
+	return atomic.LoadInt32(&rf.lastApplied)
+}
+
+func (rf *Raft) setLastApplied(val int32) {
+	atomic.StoreInt32(&rf.lastApplied, val)
+}

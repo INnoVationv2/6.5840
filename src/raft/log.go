@@ -24,9 +24,8 @@ func (entry *LogEntry) String() string {
 }
 
 func (rf *Raft) buildLogEntry(command interface{}, term int32) *LogEntry {
-	index := rf.getLastLogIndex()
 	return &LogEntry{
-		Index:   index + 1,
+		Index:   rf.getLastLogIndex() + 1,
 		Term:    term,
 		Command: command,
 	}
@@ -80,39 +79,34 @@ func (rf *Raft) buildAppendEntriesArgs(args *AppendEntriesArgs, serverNo int, he
 		copy(args.Entries, logs)
 	}
 
-	DPrintf("[%v]Build Append Entry For %d, NextIndex:%d, nextLogPos:%d",
+	DPrintf("[%v]Build AppendEntry For %d, NextIndex:%d, nextLogPos:%d",
 		rf.getServerDetail(), serverNo, nextIdx, nextLogPos)
 }
 
 // Lab测试提交命令的地方，但是和客户端提交command不同
 // 这里需要立刻返回，而不是等日志提交后才返回结果
 func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
-	index = -1
-	term = -1
-
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if !rf.isLeader() || rf.killed() {
-		isLeader = false
-		return
+		rf.mu.Unlock()
+		return -1, -1, false
 	}
-
 	currentTerm := rf.getCurrentTerm()
 	logEntry := rf.buildLogEntry(command, currentTerm)
 	rf.log = append(rf.log, *logEntry)
+	DPrintf("[%v]Append Log, LastLogIdx:%d", rf.getServerDetail(), logEntry.Index)
 	rf.persist()
-	DPrintf("[%v]Append Log, LastLogIndex:%d", rf.getServerDetail(), logEntry.Index)
+
+	rf.mu.Unlock()
 
 	go rf.syncLogWithFollower(currentTerm)
-
 	return int(logEntry.Index), int(currentTerm), true
 }
 
 // 发送日志到所有Server，达成一致后对日志提交
 func (rf *Raft) syncLogWithFollower(term int32) {
 	DPrintf("[%v]Start Sync Log", rf.getServerDetail())
-
 	majority := rf.majority
 	for idx := range rf.peers {
 		if int32(idx) == rf.me {
@@ -121,16 +115,18 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 		serverNo := idx
 		go func() {
 			var status int
-			for !rf.killed() && rf.isLeader() && term == rf.getCurrentTerm() {
-				status = rf.sendEntriesToFollower(serverNo, false)
-				// 如果是超时发送失败, 需要持续重试
-				if status == TIMEOUT || status == SNAPSHOTCOMPLETE {
+			for !rf.killed() {
+				status = rf.sendEntriesToFollower(term, serverNo, false)
+				// 如果是发送超时或者snapshot发送完成, 需要重试发送
+				if status == TIMEOUT {
 					DPrintf("[%v]Send AppendEntries RPC To %d Timeout, ReSending", rf.getServerDetail(), serverNo)
+					continue
+				} else if status == SNAPSHOTCOMPLETE {
+					DPrintf("[%v]Success Send Snapshot To %d", rf.getServerDetail(), serverNo)
 					continue
 				}
 				break
 			}
-			DPrintf("[%v]Success Send AppendEntries To %d, Status:%v, Killed:%v, isLeader:%v, term:%d", rf.getServerDetail(), serverNo, status, rf.killed(), rf.isLeader(), term)
 			if status == COMPLETE {
 				if atomic.AddInt32(&majority, -1) == 0 {
 					DPrintf("[%v]Update CommitIndex", rf.getServerDetail())
@@ -147,7 +143,7 @@ func (rf *Raft) updateCommitIndex(term int32) {
 	defer rf.mu.Unlock()
 
 	if !rf.isLeader() || rf.killed() || term != rf.getCurrentTerm() {
-		DPrintf("[%v]Update Commit Index Fail", rf.getServerDetail())
+		DPrintf("[%v]Update Commit Index Failed, Server Status Changed!", rf.getServerDetail())
 		return
 	}
 
@@ -164,12 +160,12 @@ func (rf *Raft) updateCommitIndex(term int32) {
 	DPrintf("[%v]Update Commit Index Complete", rf.getServerDetail())
 }
 
-func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
+func (rf *Raft) sendEntriesToFollower(term int32, serverNo int, heartbeat bool) int {
 	args := &AppendEntriesArgs{}
 	reply := &AppendEntriesReply{}
 	for !rf.killed() {
 		rf.mu.Lock()
-		if rf.getRole() != LEADER {
+		if rf.getRole() != LEADER || term != rf.getCurrentTerm() {
 			rf.mu.Unlock()
 			return ERROR
 		}
@@ -213,8 +209,8 @@ func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 			rf.mu.Unlock()
 			return COMPLETE
 		}
-		// 接下来都是reply.Success = false
 
+		// 接下来都是reply.Success = false
 		if reply.Term > rf.getCurrentTerm() {
 			DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
 			rf.turnToFollower(reply.Term, -1)
@@ -227,9 +223,9 @@ func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 			// Follower日志比Leader短
 			rf.setNextIndex(serverNo, reply.XLen)
 		} else {
-			logIdx := max(int32(len(rf.log)-1), 1)
+			logIdx := max(int32(len(rf.log)-1), 0)
 			pos := rf.getLogPosByIdx(logIdx)
-			for pos > 1 && rf.log[pos].Term > reply.XTerm {
+			for pos > 0 && rf.log[pos].Term > reply.XTerm {
 				pos--
 			}
 			if rf.log[pos].Term == reply.XTerm {
@@ -287,8 +283,8 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		reply.XIndex = -1
 		reply.XLen = rf.getLogSz()
 
-		// 返回属于冲突term的第一个条目的index
-		if args.PrevLogIndex <= lastLogIdx {
+		// 返回属于冲突Term的第一个条目的index
+		if len(rf.log) > 0 && args.PrevLogIndex <= lastLogIdx {
 			idx := max(rf.getLogPosByIdx(args.PrevLogIndex), 0)
 			reply.XTerm = rf.log[idx].Term
 			for idx >= 0 && rf.log[idx].Term == reply.XTerm {
@@ -308,7 +304,6 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 				j++
 			}
 		}
-		DPrintf("[%v]1-i:%d, j:%d", rf.getServerDetail(), i, j)
 		for i < int32(len(rf.log)) && j < len(args.Entries) {
 			entry1, entry2 := rf.log[i], args.Entries[j]
 			if entry1.Term != entry2.Term {
@@ -318,7 +313,6 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 			}
 			i, j = i+1, j+1
 		}
-		DPrintf("[%v]2-i:%d, j:%d", rf.getServerDetail(), i, j)
 		// 截断args.Entries
 		args.Entries = args.Entries[j:]
 		if len(args.Entries) != 0 {
@@ -326,17 +320,16 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 			rf.persist()
 		}
 		DPrintf("[%v]Append %d Log, LastLogIndex:%d", rf.getServerDetail(), len(args.Entries), rf.getLastLogIndex())
-		for idx, entry := range rf.log {
-			DPrintf("    [%v]Append Idx:%d LogIndex:%d", rf.getServerDetail(), idx, entry.Index)
-		}
 	}
 
 	// 更新CommitIndex, Follower同样要任期相同才提交
 	newCommitIndex := min(args.LeaderCommit, lastLogIdx)
-	logTerm := rf.getLogTermByIdx(newCommitIndex)
-	if newCommitIndex > rf.getCommitIndex() && args.Term == logTerm {
+	if newCommitIndex > rf.getCommitIndex() && args.Term == rf.getLogTermByIdx(newCommitIndex) {
 		rf.setCommitIndex(newCommitIndex)
 		DPrintf("[%v]Update CommitIndex To %d", rf.getServerDetail(), newCommitIndex)
+	}
+
+	if rf.getCommitIndex() > rf.getLastApplied() {
 		go rf.sendCommitedLogToTester()
 	}
 
@@ -347,44 +340,28 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 func (rf *Raft) sendCommitedLogToTester() {
 	rf.applyChMutex.Lock()
 	defer rf.applyChMutex.Unlock()
-	DPrintf("[%v]Start Send Log To Tester:[%d~%d]", rf.getServerDetail(), rf.lastApplied+1, rf.getCommitIndex())
-
-	if rf.snapshot != nil && rf.lastApplied < rf.snapshot.LastIncludedIndex {
-		DPrintf("[%v]Send Snapshot To Tester, [%d~%d]", rf.getServerDetail(), rf.lastApplied, rf.snapshot.LastIncludedIndex)
-		msg := ApplyMsg{
-			SnapshotValid: true,
-			SnapshotIndex: int(rf.snapshot.LastIncludedIndex),
-			SnapshotTerm:  int(rf.snapshot.LastIncludedTerm),
-			Snapshot:      rf.snapshot.Data,
-		}
-		DPrintf("[%v]Snapshot Orgin Size:%d, Msg Size:%d", rf.getServerDetail(), len(rf.snapshot.Data), len(msg.Snapshot))
-		rf.applyCh <- msg
-		rf.lastApplied = int32(msg.SnapshotIndex)
-		DPrintf("[%v]Send Snapshot%v To Tester", rf.getServerDetail(), rf.snapshot)
-	}
 
 	rf.mu.Lock()
-	if rf.lastApplied >= rf.commitIndex {
+	if rf.lastApplied >= rf.getCommitIndex() {
 		rf.mu.Unlock()
 		return
 	}
+	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), rf.lastApplied+1, rf.getCommitIndex())
 	st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
 	subLog := rf.log[st : ed+1]
 	logs := make([]LogEntry, len(subLog))
 	copy(logs, subLog)
 	DPrintf("[%v]LastApplied:%d,pos%d CommitIndex:%d,pos:%d, FirstLogIdx:%d", rf.getServerDetail(), rf.lastApplied, st, rf.commitIndex, ed, rf.log[st].Index)
+	rf.lastApplied = logs[len(logs)-1].Index
 	rf.mu.Unlock()
 
 	msg := ApplyMsg{CommandValid: true}
 	for _, log := range logs {
-		msg.CommandIndex, msg.Command = int(log.Index), log.Command
 		DPrintf("[%v]Send Log %d To Tester", rf.getServerDetail(), log.Index)
+		msg.CommandIndex, msg.Command = int(log.Index), log.Command
 		rf.applyCh <- msg
 	}
-	rf.lastApplied = logs[len(logs)-1].Index
-
-	DPrintf("[%v]Send %d~%d Log To Tester, Sz:%d", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index, len(logs))
-	DPrintf("[%v]Send Log To Tester Complete, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+	DPrintf("[%v]Success Send %d~%d Log To Tester, Sz:%d, Update LastApplied To %d", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index, len(logs), rf.lastApplied)
 }
 
 func (rf *Raft) sendHeartbeat() {
@@ -400,8 +377,7 @@ func (rf *Raft) sendHeartbeat() {
 				continue
 			}
 			if rf.heartbeatTimeout(idx) {
-				DPrintf("[%v]Send Heartbeat to %d", rf.getServerDetail(), idx)
-				go rf.sendEntriesToFollower(idx, true)
+				go rf.sendEntriesToFollower(rf.getCurrentTerm(), idx, true)
 			}
 		}
 		time.Sleep(gap)
