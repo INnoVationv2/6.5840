@@ -18,13 +18,11 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) buildRequestVoteArgs() *RequestVoteArgs {
-	lastLogIdx := int32(len(rf.log) - 1)
-	lastLogTerm := rf.log[lastLogIdx].Term
 	return &RequestVoteArgs{
 		Term:         rf.getCurrentTerm(),
 		CandidateId:  rf.me,
-		LastLogIndex: lastLogIdx,
-		LastLogTerm:  lastLogTerm,
+		LastLogIndex: rf.getLastLogIndex(),
+		LastLogTerm:  rf.getLastLogTerm(),
 	}
 }
 
@@ -51,8 +49,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// 比较日志，只投给日志至少和自己一样新的Candidate
-	lastLogIdx := int32(len(rf.log) - 1)
-	lastLogTerm := rf.log[lastLogIdx].Term
+	lastLogIdx, lastLogTerm := rf.getLastLogIndex(), rf.getLastLogTerm()
 	if !compareLog(args.LastLogIndex, args.LastLogTerm, lastLogIdx, lastLogTerm) {
 		DPrintf("[%s]RequestVote Candidate Log Is Too Old", rf.getServerDetail())
 		return
