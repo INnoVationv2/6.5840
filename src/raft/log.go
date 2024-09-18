@@ -79,8 +79,7 @@ func (rf *Raft) buildAppendEntriesArgs(args *AppendEntriesArgs, serverNo int, he
 		copy(args.Entries, logs)
 	}
 
-	DPrintf("[%v]Build AppendEntry For %d, NextIndex:%d, nextLogPos:%d",
-		rf.getServerDetail(), serverNo, nextIdx, nextLogPos)
+	DPrintf("[%v]Build AppendEntry For %d, NextIndex:%d, nextLogPos:%d", rf.getServerDetail(), serverNo, nextIdx, nextLogPos)
 }
 
 // Lab测试提交命令的地方，但是和客户端提交command不同
@@ -155,7 +154,7 @@ func (rf *Raft) updateCommitIndex(term int32) {
 	}
 
 	if rf.getCommitIndex() > rf.lastApplied {
-		go rf.sendCommitedLogToTester()
+		rf.sendCommitedLogToTester()
 	}
 	DPrintf("[%v]Update Commit Index Complete", rf.getServerDetail())
 }
@@ -330,7 +329,7 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 	}
 
 	if rf.getCommitIndex() > rf.getLastApplied() {
-		go rf.sendCommitedLogToTester()
+		rf.sendCommitedLogToTester()
 	}
 
 	reply.Success = true
@@ -338,23 +337,20 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 }
 
 func (rf *Raft) sendCommitedLogToTester() {
-	rf.applyChMutex.Lock()
-	defer rf.applyChMutex.Unlock()
-
-	rf.mu.Lock()
-	if rf.lastApplied >= rf.getCommitIndex() {
-		rf.mu.Unlock()
-		return
-	}
-	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), rf.lastApplied+1, rf.getCommitIndex())
 	st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
 	subLog := rf.log[st : ed+1]
 	logs := make([]LogEntry, len(subLog))
 	copy(logs, subLog)
 	DPrintf("[%v]LastApplied:%d,pos%d CommitIndex:%d,pos:%d, FirstLogIdx:%d", rf.getServerDetail(), rf.lastApplied, st, rf.commitIndex, ed, rf.log[st].Index)
 	rf.lastApplied = logs[len(logs)-1].Index
-	rf.mu.Unlock()
+	go rf.sendLogToTester(logs)
+}
 
+func (rf *Raft) sendLogToTester(logs []LogEntry) {
+	rf.applyChMutex.Lock()
+	defer rf.applyChMutex.Unlock()
+
+	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), rf.lastApplied+1, rf.getCommitIndex())
 	msg := ApplyMsg{CommandValid: true}
 	for _, log := range logs {
 		DPrintf("[%v]Send Log %d To Tester", rf.getServerDetail(), log.Index)
