@@ -1,42 +1,15 @@
 package raft
 
-//
-// this is an outline of the API that raft must expose to
-// the service (or tester). see comments below for
-// each of these functions for more details.
-//
-// rf = Make(...)
-//   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
-//   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leader
-// ApplyMsg
-//   each time a new entry is committed to the log, each Raft peer
-//   should send an ApplyMsg to the service (or tester)
-//   in the same server.
-//
-
 import (
 	"6.5840/labgob"
+	"6.5840/labrpc"
 	"bytes"
 	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
-	//	"6.5840/labgob"
-	"6.5840/labrpc"
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part 3D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -55,13 +28,12 @@ const (
 	FOLLOWER
 )
 
-// A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int32               // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	mu        sync.Mutex
+	peers     []*labrpc.ClientEnd
+	persister *Persister
+	me        int32
+	dead      int32
 	name      int32
 
 	lastSendTime []int64
@@ -82,6 +54,7 @@ type Raft struct {
 
 	nextIndex  []int32
 	matchIndex []int32
+	lastSent   []int32
 
 	snapshot       *Snapshot
 	snapshotStatus int32
@@ -90,7 +63,7 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return int(rf.getCurrentTerm()), rf.getRole() == LEADER
+	return int(rf.currentTerm), rf.getRole() == LEADER
 }
 
 func (rf *Raft) isLeader() bool {
@@ -159,17 +132,17 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) turnToFollower(term int32, votedFor int32) {
 	rf.setRole(FOLLOWER)
-	rf.setCurrentTerm(term)
-	rf.setVoteFor(votedFor)
+	rf.currentTerm = term
+	rf.votedFor = votedFor
 }
 
 func (rf *Raft) turnToLeader() {
 	// Leader必须由Candidate转变而来
 	rf.setRole(LEADER)
-	rf.setVoteFor(rf.me)
+	rf.votedFor = rf.me
 	for idx := range rf.peers {
-		rf.setNextIndex(idx, int32(len(rf.log)))
-		rf.setMatchIndex(idx, 0)
+		rf.nextIndex[idx] = int32(len(rf.log))
+		rf.matchIndex[idx] = 0
 	}
 }
 
@@ -195,6 +168,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.nextIndex[i] = 1
 	}
 	rf.matchIndex = make([]int32, peerNum)
+	rf.lastSent = make([]int32, peerNum)
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 	go rf.ticker()
 	return rf

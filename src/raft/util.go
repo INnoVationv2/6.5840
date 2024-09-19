@@ -34,7 +34,7 @@ func (rf *Raft) getRoleStr() string {
 }
 
 func (rf *Raft) getServerDetail() string {
-	return fmt.Sprintf("%v %d %d_%d", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
+	return fmt.Sprintf("%v %d %d_%d", rf.getRoleStr(), rf.currentTerm, rf.name, rf.me)
 }
 
 func min(x, y int32) int32 {

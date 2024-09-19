@@ -19,7 +19,7 @@ type RequestVoteReply struct {
 
 func (rf *Raft) buildRequestVoteArgs() *RequestVoteArgs {
 	return &RequestVoteArgs{
-		Term:         rf.getCurrentTerm(),
+		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
 		LastLogIndex: rf.getLastLogIndex(),
 		LastLogTerm:  rf.getLastLogTerm(),
@@ -32,18 +32,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	DPrintf("[%s]Get Vote Request:%v", rf.getServerDetail(), *args)
 
-	currentTerm := rf.getCurrentTerm()
+	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	reply.VoteGranted = false
 
 	if args.Term < currentTerm {
 		DPrintf("[%s]RequestVote Term Is Expired", rf.getServerDetail())
 		return
-	} else if args.Term > currentTerm {
+	}
+
+	if args.Term > currentTerm {
 		rf.turnToFollower(args.Term, -1)
 		rf.persist()
 		reply.Term = args.Term
-	} else if rf.getVoteFor() != -1 && rf.getVoteFor() != args.CandidateId {
+	} else if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 		DPrintf("[%s]Already Voted In This Term", rf.getServerDetail())
 		return
 	}
@@ -56,7 +58,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	reply.VoteGranted = true
-	rf.setVoteFor(args.CandidateId)
+	rf.votedFor = args.CandidateId
 	rf.persist()
 	DPrintf("[%s]Vote", rf.getServerDetail())
 }
@@ -78,8 +80,8 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		DPrintf("[%s]Election Timout.", rf.getServerDetail())
 		rf.setRole(CANDIDATE)
-		rf.incCurrentTerm()
-		rf.setVoteFor(rf.me)
+		rf.currentTerm++
+		rf.votedFor = rf.me
 		rf.closeElectionTimer()
 		rf.persist()
 		requestVoteArgs := rf.buildRequestVoteArgs()
@@ -115,7 +117,7 @@ func (rf *Raft) startElection(args *RequestVoteArgs) {
 		select {
 		case reply := <-voteReplyChan:
 			rf.mu.Lock()
-			if rf.getRole() != CANDIDATE || args.Term != rf.getCurrentTerm() || rf.killed() {
+			if rf.getRole() != CANDIDATE || args.Term != rf.currentTerm || rf.killed() {
 				DPrintf("[%v]Stop Election", rf.getServerDetail())
 				rf.mu.Unlock()
 				return
@@ -134,7 +136,7 @@ func (rf *Raft) startElection(args *RequestVoteArgs) {
 				}
 			} else {
 				DPrintf("[%v]%d Not Vote", rf.getServerDetail(), reply.ServerIDx)
-				if reply.Term > rf.getCurrentTerm() {
+				if reply.Term > rf.currentTerm {
 					DPrintf("[%s]Server %d's Term>CurrentTerm, Back To Follower", rf.getServerDetail(), reply.ServerIDx)
 					rf.turnToFollower(reply.Term, -1)
 					rf.persist()

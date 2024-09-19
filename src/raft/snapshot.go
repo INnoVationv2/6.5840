@@ -26,7 +26,7 @@ type Snapshot struct {
 
 func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
 	snapshot := &InstallSnapshot{
-		Term:              rf.getCurrentTerm(),
+		Term:              rf.currentTerm,
 		LeaderId:          rf.me,
 		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
 		LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
@@ -49,13 +49,7 @@ func (rf *Raft) sendSnapshotToFollower(serverNo int, args *InstallSnapshot) int 
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.killed() || rf.getRole() != LEADER || rf.getCurrentTerm() != args.Term {
-		DPrintf("[%v]Send Snapshot to follower %d failed, Leader status changed:"+
-			"killed:%v Role:%v Term:%d CurrentTerm:%d", rf.getServerDetail(), serverNo, rf.killed(), rf.getRoleStr(), args.Term, rf.getCurrentTerm())
-		return ERROR
-	}
-
-	if reply.Term > rf.getCurrentTerm() {
+	if reply.Term > rf.currentTerm {
 		DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
 		rf.turnToFollower(reply.Term, -1)
 		rf.persist()
@@ -63,8 +57,8 @@ func (rf *Raft) sendSnapshotToFollower(serverNo int, args *InstallSnapshot) int 
 	}
 
 	idx := args.LastIncludedIndex
-	rf.setNextIndex(serverNo, max(rf.getNextIndex(serverNo), idx+1))
-	rf.setMatchIndex(serverNo, max(rf.getMatchIndex(serverNo), idx))
+	rf.nextIndex[serverNo] = max(rf.nextIndex[serverNo], idx+1)
+	rf.matchIndex[serverNo] = max(rf.matchIndex[serverNo], idx)
 	DPrintf("[%v]Success Send Snapshot To %d, Update NextIndex To %d, MatchIndex To %d", rf.getServerDetail(), serverNo, idx+1, idx)
 
 	return SNAPSHOTCOMPLETE
@@ -74,8 +68,9 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("[%v]Received Snapshot %v", rf.getServerDetail(), args)
-	term := rf.getCurrentTerm()
+	term := rf.currentTerm
 	reply.Term = term
+
 	if args.Term < term {
 		return
 	}
