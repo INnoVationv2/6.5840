@@ -135,8 +135,12 @@ func (kv *KVServer) ticker() {
 	for !kv.killed() {
 		select {
 		case msg := <-kv.applyCh:
-			DPrintf("Update AppliedLogIdx To %d", msg.CommandIndex)
-			atomic.StoreInt32(&kv.appliedLogIdx, int32(msg.CommandIndex))
+			kv.mu.Lock()
+			if int32(msg.CommandIndex) > kv.getAppliedLogIdx() {
+				DPrintf("Update AppliedLogIdx To %d", msg.CommandIndex)
+				atomic.StoreInt32(&kv.appliedLogIdx, int32(msg.CommandIndex))
+			}
+			kv.mu.Unlock()
 		default:
 			time.Sleep(time.Millisecond * 10)
 		}
