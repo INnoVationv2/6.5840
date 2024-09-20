@@ -14,7 +14,7 @@ import (
 
 const Debug = true
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
+func DPrintf(format string, a ...interface{}) {
 	if Debug {
 		log.Printf(format, a...)
 	}
@@ -55,31 +55,68 @@ type KVServer struct {
 	maxraftstate int
 
 	appliedLogIdx int32
-	val           map[string]string
+	db            map[string]string
 
-	tickerStatus int32
+	history     map[int64]map[int32]string
+	clientState map[int64]int32
+}
+
+func (kv *KVServer) checkIfCommandAlreadyExecute(clientId int64, commandId int32) bool {
+	if kv.clientState[clientId] >= commandId {
+		return true
+	}
+	return false
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	DPrintf("[Server %v]Received Command {Get %v}", kv.me, args.Key)
+	DPrintf("[Server %v]Received Command %v", kv.me, args)
+	clientId, cmdId := args.ClientId, args.CommandId
+	kv.mu.Lock()
+	if kv.checkIfCommandAlreadyExecute(clientId, cmdId) {
+		reply.Err = OK
+		reply.Value = kv.history[args.ClientId][args.CommandId]
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+
 	command := buildCommand(GET, args.Key)
 	reply.Err = kv.submitCommand(command)
 	if reply.Err != OK {
-		DPrintf("[Server %v]Command {Get, %v} failed:%v", kv.me, args.Key, reply.Err)
+		DPrintf("[Server %v]Command %v failed:%v", kv.me, args, reply.Err)
 		return
 	}
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	result, ok := kv.val[args.Key]
+	result, ok := kv.db[args.Key]
 	if !ok {
 		reply.Err = ErrNoKey
 		result = ""
 	}
 	reply.Value = result
+
+	kv.clientState[args.ClientId] = max(cmdId, kv.clientState[args.ClientId])
+
+	if kv.history[clientId] == nil {
+		kv.history[clientId] = make(map[int32]string)
+	}
+	kv.history[clientId][cmdId] = result
+	DPrintf("[Server %d]Add Resut To History", kv.me)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
+	DPrintf("[Server %v]Received Command %v", kv.me, args)
+	clientId, cmdId := args.ClientId, args.CommandId
+
+	kv.mu.Lock()
+	if kv.checkIfCommandAlreadyExecute(clientId, cmdId) {
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+
 	command := buildCommand(PUT, args.Key, args.Value)
 	reply.Err = kv.submitCommand(command)
 	if reply.Err != OK {
@@ -89,10 +126,23 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	kv.val[args.Key] = args.Value
+	kv.db[args.Key] = args.Value
+
+	kv.clientState[clientId] = max(cmdId, kv.clientState[clientId])
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
+	DPrintf("[Server %v]Received Command %v", kv.me, args)
+	clientId, cmdId := args.ClientId, args.CommandId
+
+	kv.mu.Lock()
+	if kv.checkIfCommandAlreadyExecute(clientId, cmdId) {
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+
 	command := buildCommand(APPEND, args.Key, args.Value)
 	reply.Err = kv.submitCommand(command)
 	if reply.Err != OK {
@@ -102,12 +152,14 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	val, ok := kv.val[args.Key]
+	val, ok := kv.db[args.Key]
 	if !ok {
 		reply.Err = ErrNoKey
 		val = ""
 	}
-	kv.val[args.Key] = val + args.Value
+	kv.db[args.Key] = val + args.Value
+
+	kv.clientState[args.ClientId] = max(cmdId, kv.clientState[args.ClientId])
 }
 
 func (kv *KVServer) submitCommand(cmd *Command) Err {
@@ -128,7 +180,7 @@ func (kv *KVServer) submitCommand(cmd *Command) Err {
 	return OK
 }
 
-// check apply chan
+// check apply chan, Update appliedLogIdx
 func (kv *KVServer) ticker() {
 	DPrintf("[Server %v]Ticker Start", kv.me)
 
@@ -137,7 +189,7 @@ func (kv *KVServer) ticker() {
 		case msg := <-kv.applyCh:
 			kv.mu.Lock()
 			if int32(msg.CommandIndex) > kv.getAppliedLogIdx() {
-				DPrintf("Update AppliedLogIdx To %d", msg.CommandIndex)
+				DPrintf("[Server %d]Update AppliedLogIdx To %d", kv.me, msg.CommandIndex)
 				atomic.StoreInt32(&kv.appliedLogIdx, int32(msg.CommandIndex))
 			}
 			kv.mu.Unlock()
@@ -159,6 +211,18 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+func (kv *KVServer) Report(args *GetArgs, reply *GetReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	clientID, cmdId := args.ClientId, args.CommandId
+	DPrintf("[Server %d]Receive Report From %d, Delete Cmd %d From History", kv.me, clientID, cmdId)
+	delete(kv.history[clientID], cmdId)
+	//if len(kv.history[clientID]) == 0 {
+	//	DPrintf("[Server %d]Erase History", kv.me)
+	//	kv.history[clientID] = make(map[int32]string)
+	//}
+}
+
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	labgob.Register(Command{})
 
@@ -168,7 +232,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.val = make(map[string]string)
+	kv.db = make(map[string]string)
+	kv.history = make(map[int64]map[int32]string)
+	kv.clientState = make(map[int64]int32)
+
 	go kv.ticker()
 
 	return kv
