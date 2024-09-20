@@ -30,7 +30,7 @@ func (ck *Clerk) Get(key string) string {
 	args, reply := GetArgs{key}, GetReply{}
 	no := ck.leaderId
 	for {
-		DPrintf("[Client]Call Server %d, {Get %v}", no, key)
+		DPrintf("[Client]Call Server RPC %d, {Get %v}", no, key)
 		ok := ck.servers[no].Call("KVServer.Get", &args, &reply)
 		if !ok {
 			DPrintf("[Client]Call Server %d: {Get %v} Timeout", no, key)
@@ -53,7 +53,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args, reply := PutAppendArgs{key, value}, PutAppendReply{}
 	no := ck.leaderId
 	for {
-		DPrintf("[Client]Call Server %d {%v %v,%v}", no, op, key, value)
+		DPrintf("[Client]Call Server RPC %d {%v %v,%v}", no, op, key, value)
 		ok := ck.servers[no].Call("KVServer."+op, &args, &reply)
 		if !ok {
 			DPrintf("Send Get Request To %d Timeout", no)
