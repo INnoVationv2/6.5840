@@ -100,7 +100,6 @@ func (rf *Raft) startElection(args *RequestVoteArgs) {
 			continue
 		}
 		serverIdx := idx
-		DPrintf("[%v]Send Request Vote To %d", rf.getServerDetail(), serverIdx)
 		go func() {
 			reply := &RequestVoteReply{ServerIDx: int32(serverIdx)}
 			ok := rf.sendRequestVote(serverIdx, args, reply)
@@ -152,6 +151,7 @@ func (rf *Raft) startElection(args *RequestVoteArgs) {
 }
 
 func (rf *Raft) sendRequestVote(idx int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	DPrintf("[%v]Send Request Vote RPC To %d", rf.getServerDetail(), idx)
 	ok := rf.peers[idx].Call("Raft.RequestVote", args, reply)
 	if !ok {
 		DPrintf("[%v]Send Request Vote To %d Timeout.", rf.getServerDetail(), idx)

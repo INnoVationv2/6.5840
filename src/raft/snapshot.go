@@ -39,11 +39,11 @@ func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
 func (rf *Raft) sendSnapshotToFollower(serverNo int, args *InstallSnapshot) int {
 	rf.resetHeartbeatTimer(serverNo)
 
-	DPrintf("[%v]Send Snapshot to follower %d", rf.getServerDetail(), serverNo)
+	DPrintf("[%v]Send Snapshot RPC to follower %d", rf.getServerDetail(), serverNo)
 	reply := &InstallSnapshotReply{}
 	ok := rf.peers[serverNo].Call("Raft.AcceptSnapshot", args, reply)
 	if !ok {
-		DPrintf("[%v]Send Snapshot to %d timeout", rf.getServerDetail(), serverNo)
+		DPrintf("[%v]Send Snapshot RPC to %d timeout", rf.getServerDetail(), serverNo)
 		return TIMEOUT
 	}
 
