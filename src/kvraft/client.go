@@ -1,13 +1,15 @@
 package kvraft
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+	"sync/atomic"
+)
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	servers  []*labrpc.ClientEnd
+	leaderId int32
 }
 
 func nrand() int64 {
@@ -24,37 +26,58 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer."+op, &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
+	args, reply := GetArgs{key}, GetReply{}
+	no := ck.leaderId
+	for {
+		DPrintf("[Client]Call Server %d, {Get %v}", no, key)
+		ok := ck.servers[no].Call("KVServer.Get", &args, &reply)
+		if !ok {
+			DPrintf("[Client]Call Server %d: {Get %v} Timeout", no, key)
+			continue
+		}
 
-	// You will have to modify this function.
-	return ""
+		if reply.Err == ErrWrongLeader {
+			DPrintf("[Client]Call Server %d: {Get %v} failed:%v", no, key, reply.Err)
+			no = (no + 1) % int32(len(ck.servers))
+			continue
+		}
+
+		atomic.StoreInt32(&ck.leaderId, no)
+		DPrintf("[Client]Update LeaderId to %d", no)
+		return reply.Value
+	}
 }
 
-// shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	args, reply := PutAppendArgs{key, value}, PutAppendReply{}
+	no := ck.leaderId
+	for {
+		DPrintf("[Client]Call Server %d {%v %v,%v}", no, op, key, value)
+		ok := ck.servers[no].Call("KVServer."+op, &args, &reply)
+		if !ok {
+			DPrintf("Send Get Request To %d Timeout", no)
+			continue
+		}
+
+		if reply.Err == ErrWrongLeader {
+			DPrintf("[Client]Call Server %d, {%v %v,%v} failed:%v", no, op, key, value, reply.Err)
+			no = (no + 1) % int32(len(ck.servers))
+			continue
+		}
+
+		atomic.StoreInt32(&ck.leaderId, no)
+		DPrintf("[Client]Update LeaderId to %d", no)
+		return
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
+	DPrintf("[Client]Put {%v,%v} Complete", key, value)
 }
+
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
+	DPrintf("[Client]Append {%v,%v} Complete", key, value)
 }
