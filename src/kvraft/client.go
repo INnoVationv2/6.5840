@@ -9,8 +9,10 @@ import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
-	servers  []*labrpc.ClientEnd
-	leaderId int32
+	id         int64
+	commandCnt int32
+	servers    []*labrpc.ClientEnd
+	leaderId   int32
 }
 
 func nrand() int64 {
@@ -20,20 +22,35 @@ func nrand() int64 {
 	return x
 }
 
+func (ck *Clerk) getCommandId() int32 {
+	return atomic.AddInt32(&ck.commandCnt, 1)
+}
+
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.id = nrand()
 	return ck
 }
 
 func (ck *Clerk) Get(key string) string {
-	args, reply := &GetArgs{key}, &GetReply{}
+	args := &GetArgs{ClientId: ck.id,
+		CommandId: ck.getCommandId(),
+		Key:       key,
+	}
+	reply := &GetReply{}
 	ck.CallServer("Get", args, reply)
 	return reply.Value
 }
 
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args, reply := &PutAppendArgs{key, value}, &PutAppendReply{}
+	args := &PutAppendArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCommandId(),
+		Key:       key,
+		Value:     value,
+	}
+	reply := &PutAppendReply{}
 	ck.CallServer(op, args, reply)
 }
 
@@ -69,8 +86,16 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 			continue
 		}
 
+		go ck.Report(no, args.GetCommandId())
+
 		atomic.StoreInt32(&ck.leaderId, no)
 		DPrintf("[Client]Update LeaderId to %d", no)
 		return
 	}
+}
+
+func (ck *Clerk) Report(serverNo int32, cmdId int32) {
+	args, reply := GetArgs{ClientId: ck.id, CommandId: cmdId}, GetReply{}
+	DPrintf("[Client %d]Cmd %d Is Complete, Report To Server.", serverNo, cmdId)
+	ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
 }
