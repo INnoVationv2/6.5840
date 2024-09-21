@@ -26,32 +26,11 @@ func (ck *Clerk) getCommandId() int32 {
 	return atomic.AddInt32(&ck.commandCnt, 1)
 }
 
-func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
-	ck := new(Clerk)
-	ck.servers = servers
-	ck.id = nrand()
-	return ck
-}
-
 func (ck *Clerk) Get(key string) string {
-	args := &GetArgs{ClientId: ck.id,
-		CommandId: ck.getCommandId(),
-		Key:       key,
-	}
+	args := ck.buildGetArg(key)
 	reply := &GetReply{}
 	ck.CallServer("Get", args, reply)
 	return reply.Value
-}
-
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := &PutAppendArgs{
-		ClientId:  ck.id,
-		CommandId: ck.getCommandId(),
-		Key:       key,
-		Value:     value,
-	}
-	reply := &PutAppendReply{}
-	ck.CallServer(op, args, reply)
 }
 
 func (ck *Clerk) Put(key string, value string) {
@@ -64,38 +43,44 @@ func (ck *Clerk) Append(key string, value string) {
 	DPrintf("[Client]Append {%v,%v} Complete", key, value)
 }
 
+func (ck *Clerk) PutAppend(key string, value string, op string) {
+	args := ck.buildPutAppendArg(key, value)
+	reply := &PutAppendReply{}
+	ck.CallServer(op, args, reply)
+}
+
 func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 	leaderId := atomic.LoadInt32(&ck.leaderId)
-	no := leaderId
+	serverNo := leaderId
 	for {
-		DPrintf("[Client]Call Server RPC %d Args: %v", no, args)
-		ok := ck.servers[no].Call("KVServer."+op, args, reply)
-		if !ok {
-			DPrintf("Send Get Request To %d Timeout", no)
-			continue
-		}
-
-		if reply.getErr() == ErrWrongLeader {
-			DPrintf("[Client]Call Server %d: Arg: %v failed:%v", no, args, reply.getErr())
-			no = (no + 1) % int32(len(ck.servers))
-			if no == leaderId {
-				DPrintf("No Leader")
+		DPrintf("[Client]Send Command %v To KvServer %d", args, serverNo)
+		ok := ck.servers[serverNo].Call("KVServer."+op, args, reply)
+		if !ok || reply.getErr() == ErrWrongLeader {
+			DPrintf("[Client]Send Command %v To KvServer %d failed:%v, Retring...", args, serverNo, reply.getErr())
+			serverNo = (serverNo + 1) % int32(len(ck.servers))
+			if serverNo == leaderId {
+				DPrintf("[Client]No Leader, Wait Some Time Then Retry...")
 				// 试了一圈都没有Leader，说明当前没有Leader，等一会儿再试
 				time.Sleep(time.Millisecond * 150)
 			}
 			continue
 		}
-
-		go ck.Report(no, args.GetCommandId())
-
-		atomic.StoreInt32(&ck.leaderId, no)
-		DPrintf("[Client]Update LeaderId to %d", no)
-		return
+		break
 	}
+	go ck.Report(serverNo, args)
+	atomic.StoreInt32(&ck.leaderId, serverNo)
+	DPrintf("[Client]Update LeaderId to %d", serverNo)
 }
 
-func (ck *Clerk) Report(serverNo int32, cmdId int32) {
-	args, reply := GetArgs{ClientId: ck.id, CommandId: cmdId}, GetReply{}
-	DPrintf("[Client %d]Cmd %d Is Complete, Report To Server.", serverNo, cmdId)
+func (ck *Clerk) Report(serverNo int32, arg Args) {
+	args, reply := GetArgs{ClientId: ck.id, CommandId: arg.GetCommandId()}, GetReply{}
+	DPrintf("[Client]Command %v Is Complete, Report To Server %d", args, serverNo)
 	ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
+}
+
+func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
+	ck := new(Clerk)
+	ck.id = nrand()
+	ck.servers = servers
+	return ck
 }

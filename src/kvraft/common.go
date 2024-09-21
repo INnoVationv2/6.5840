@@ -4,7 +4,7 @@ import "fmt"
 
 const (
 	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
+	Executed       = "EXECUTED"
 	ErrWrongLeader = "ErrWrongLeader"
 	Killed         = "Killed"
 )
@@ -23,8 +23,16 @@ type GetArgs struct {
 	Key string
 }
 
+func (ck *Clerk) buildGetArg(key string) *GetArgs {
+	return &GetArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCommandId(),
+		Key:       key,
+	}
+}
+
 func (args *GetArgs) String() string {
-	return fmt.Sprintf("GetArgs:{Key:%s}", args.Key)
+	return fmt.Sprintf("{Get %s}", args.Key)
 }
 
 func (args *GetArgs) GetCommandId() int32 {
@@ -39,8 +47,17 @@ type PutAppendArgs struct {
 	Value string
 }
 
+func (ck *Clerk) buildPutAppendArg(key, value string) *PutAppendArgs {
+	return &PutAppendArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCommandId(),
+		Key:       key,
+		Value:     value,
+	}
+}
+
 func (args *PutAppendArgs) String() string {
-	return fmt.Sprintf("PutAppendArgs:{Key:%s,Val:%s}", args.Key, args.Value)
+	return fmt.Sprintf("{PutAppend Key:%s,Val:%s}", args.Key, args.Value)
 }
 
 func (args *PutAppendArgs) GetCommandId() int32 {
@@ -62,7 +79,7 @@ func (gr *GetReply) getErr() Err {
 }
 
 func (gr *GetReply) String() string {
-	return fmt.Sprintf("GetReply {Err:%s,Val:%s}", gr.Err, gr.Value)
+	return fmt.Sprintf("{GetReply Err:%s,Val:%s}", gr.Err, gr.Value)
 }
 
 type PutAppendReply struct {
@@ -74,5 +91,5 @@ func (pr *PutAppendReply) getErr() Err {
 }
 
 func (pr *PutAppendReply) String() string {
-	return fmt.Sprintf("PutAppendReply {Err:%s}", pr.Err)
+	return fmt.Sprintf("{PutAppendReply Err:%s}", pr.Err)
 }
