@@ -4,9 +4,9 @@ import "fmt"
 
 const (
 	OK             = "OK"
-	Executed       = "EXECUTED"
+	Pending        = "Pending"
 	ErrWrongLeader = "ErrWrongLeader"
-	Killed         = "Killed"
+	LogNotMatch    = "LogNotMatch"
 )
 
 type Err string
@@ -57,7 +57,7 @@ func (ck *Clerk) buildPutAppendArg(key, value string) *PutAppendArgs {
 }
 
 func (args *PutAppendArgs) String() string {
-	return fmt.Sprintf("{PutAppend Key:%s,Val:%s}", args.Key, args.Value)
+	return fmt.Sprintf("{Key:%s,Val:%s}", args.Key, args.Value)
 }
 
 func (args *PutAppendArgs) GetCommandId() int32 {

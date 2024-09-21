@@ -27,6 +27,7 @@ func (ck *Clerk) getCommandId() int32 {
 }
 
 func (ck *Clerk) Get(key string) string {
+	DPrintf("[Client %d]Get RPC", ck.id)
 	args := ck.buildGetArg(key)
 	reply := &GetReply{}
 	ck.CallServer("Get", args, reply)
@@ -34,11 +35,13 @@ func (ck *Clerk) Get(key string) string {
 }
 
 func (ck *Clerk) Put(key string, value string) {
+	DPrintf("[Client %d]Put RPC", ck.id)
 	ck.PutAppend(key, value, "Put")
 	DPrintf("[Client]Put {%v,%v} Complete", key, value)
 }
 
 func (ck *Clerk) Append(key string, value string) {
+	DPrintf("[Client %d]Append RPC", ck.id)
 	ck.PutAppend(key, value, "Append")
 	DPrintf("[Client]Append {%v,%v} Complete", key, value)
 }
@@ -53,15 +56,15 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 	leaderId := atomic.LoadInt32(&ck.leaderId)
 	serverNo := leaderId
 	for {
-		DPrintf("[Client]Send Command %v To KvServer %d", args, serverNo)
+		DPrintf("[Client]Send Command %s %v To KvServer %d", op, args, serverNo)
 		ok := ck.servers[serverNo].Call("KVServer."+op, args, reply)
-		if !ok || reply.getErr() == ErrWrongLeader {
+		if !ok || reply.getErr() != OK {
 			DPrintf("[Client]Send Command %v To KvServer %d failed:%v, Retring...", args, serverNo, reply.getErr())
 			serverNo = (serverNo + 1) % int32(len(ck.servers))
 			if serverNo == leaderId {
 				DPrintf("[Client]No Leader, Wait Some Time Then Retry...")
 				// 试了一圈都没有Leader，说明当前没有Leader，等一会儿再试
-				time.Sleep(time.Millisecond * 150)
+				time.Sleep(time.Millisecond * 400)
 			}
 			continue
 		}
@@ -73,8 +76,9 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 }
 
 func (ck *Clerk) Report(serverNo int32, arg Args) {
-	args, reply := GetArgs{ClientId: ck.id, CommandId: arg.GetCommandId()}, GetReply{}
-	DPrintf("[Client]Command %v Is Complete, Report To Server %d", args, serverNo)
+	cmdId := arg.GetCommandId()
+	args, reply := GetArgs{ClientId: ck.id, CommandId: cmdId}, GetReply{}
+	DPrintf("[Client]Command %d Is Complete, Report To Server %d", cmdId, serverNo)
 	ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
 }
 
