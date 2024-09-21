@@ -2,13 +2,6 @@ package kvraft
 
 import "fmt"
 
-func min(x, y int32) int32 {
-	if x <= y {
-		return x
-	}
-	return y
-}
-
 func max(x, y int32) int32 {
 	if x >= y {
 		return x
@@ -24,13 +17,6 @@ func compareCommand(cmd1 *Command, cmd2 *Command) bool {
 	return cmp
 }
 
-func (kv *KVServer) getRoleStr() string {
-	if kv.isLeader() {
-		return "Leader"
-	}
-	return "Follower"
-}
-
 func (kv *KVServer) getServerDetail() string {
-	return fmt.Sprintf("%s %d", kv.getRoleStr(), kv.me)
+	return fmt.Sprintf("KvServer %d", kv.me)
 }
