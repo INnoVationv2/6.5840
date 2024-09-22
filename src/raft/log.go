@@ -114,7 +114,7 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 		serverNo := idx
 		go func() {
 			var status int
-			for !rf.killed() {
+			for !rf.killed() && rf.getRole() == LEADER {
 				status = rf.sendEntriesToFollower(term, serverNo, false)
 				// 如果是发送超时或者snapshot发送完成, 需要重试发送
 				if status == TIMEOUT {
