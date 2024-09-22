@@ -56,7 +56,7 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 	leaderId := atomic.LoadInt32(&ck.leaderId)
 	serverNo := leaderId
 	for {
-		DPrintf("[Client]Send Command %s %v To KvServer %d", op, args, serverNo)
+		DPrintf("[Client]Send Command RPC %s %v To KvServer %d", op, args, serverNo)
 		ok := ck.servers[serverNo].Call("KVServer."+op, args, reply)
 		if !ok || reply.getErr() != OK {
 			DPrintf("[Client]Send Command %v To KvServer %d failed:%v, Retring...", args, serverNo, reply.getErr())
@@ -78,7 +78,7 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 func (ck *Clerk) Report(serverNo int32, arg Args) {
 	cmdId := arg.GetCommandId()
 	args, reply := GetArgs{ClientId: ck.id, CommandId: cmdId}, GetReply{}
-	DPrintf("[Client]Command %d Is Complete, Report To Server %d", cmdId, serverNo)
+	DPrintf("[Client]Command %d Is Complete, Send Report RPC To Server %d", cmdId, serverNo)
 	ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
 }
 

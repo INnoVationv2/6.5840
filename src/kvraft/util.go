@@ -11,8 +11,8 @@ func max(x, y int32) int32 {
 
 func compareCommand(cmd1 *Command, cmd2 *Command) bool {
 	cmp := cmd1.Type == cmd2.Type && cmd1.Key == cmd2.Key
-	if cmd1.Type != GET {
-		cmp = cmp && cmd1.Value == cmd2.Value
+	if cmp && cmd1.Type != GET {
+		cmp = cmd1.Value == cmd2.Value
 	}
 	return cmp
 }
