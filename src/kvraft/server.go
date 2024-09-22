@@ -164,10 +164,13 @@ func (kv *KVServer) submitCommand(cmd *Command) {
 	for !kv.killed() && kv.getAppliedLogIdx() < int32(cmdIdx) {
 	}
 
-	cmd.Status = OK
+	if cmd.Status == LogNotMatch {
+		cmd.Status = ErrWrongLeader
+		DPrintf("[%s]Command %v Is Expired, Need Re-Submit To KVServer", kv.getServerDetail(), cmd)
+	}
 
 	if kv.killed() {
-		return
+		cmd.Status = OK
 	}
 
 	kv.mu.Lock()
@@ -213,16 +216,17 @@ func (kv *KVServer) applyCommand(cmdIdx int, cmd *Command) {
 	if !ok {
 		return
 	}
-	cmd2.Status = LogNotMatch
-	if compareCommand(cmd, cmd2) {
-		cmd2.Status = OK
-		if cmd.Type == GET {
-			val, ok := kv.db[cmd.Key]
-			if !ok {
-				cmd2.Value = ""
-			} else {
-				cmd2.Value = val
-			}
+	if !compareCommand(cmd, cmd2) {
+		cmd2.Status = LogNotMatch
+		return
+	}
+	cmd2.Status = OK
+	if cmd.Type == GET {
+		val, ok := kv.db[cmd.Key]
+		if !ok {
+			cmd2.Value = ""
+		} else {
+			cmd2.Value = val
 		}
 	}
 }
