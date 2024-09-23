@@ -176,17 +176,11 @@ func (rf *Raft) sendEntriesToFollower(term int32, serverNo int, heartbeat bool) 
 			return rf.sendSnapshotToFollower(serverNo, installSnapshot)
 		}
 
-		if rf.lastSent[serverNo] > rf.getLastLogIndex() {
-			rf.mu.Unlock()
-			return ERROR
-		}
-
 		rf.buildAppendEntriesArgs(args, serverNo, heartbeat)
 		if !heartbeat && len(args.Entries) == 0 {
 			rf.mu.Unlock()
 			return ERROR
 		}
-		rf.lastSent[serverNo] = rf.getLastLogIndex()
 		rf.resetHeartbeatTimer(serverNo)
 		rf.mu.Unlock()
 

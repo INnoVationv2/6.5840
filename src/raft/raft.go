@@ -54,7 +54,6 @@ type Raft struct {
 
 	nextIndex  []int32
 	matchIndex []int32
-	lastSent   []int32
 
 	snapshot       *Snapshot
 	snapshotStatus int32
@@ -168,7 +167,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.nextIndex[i] = 1
 	}
 	rf.matchIndex = make([]int32, peerNum)
-	rf.lastSent = make([]int32, peerNum)
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 	go rf.ticker()
 	return rf
