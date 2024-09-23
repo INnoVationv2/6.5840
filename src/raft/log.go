@@ -227,16 +227,16 @@ func (rf *Raft) sendEntriesToFollower(term int32, serverNo int, heartbeat bool) 
 
 		if reply.XTerm == -1 && reply.XIndex == -1 {
 			// Follower日志比Leader短
-			rf.nextIndex[serverNo] = reply.XLen
+			rf.nextIndex[serverNo] = min(rf.nextIndex[serverNo], reply.XLen)
 		} else {
 			pos := max(int32(len(rf.log)-1), 0)
 			for pos > 0 && rf.log[pos].Term > reply.XTerm {
 				pos--
 			}
 			if rf.log[pos].Term == reply.XTerm {
-				rf.nextIndex[serverNo] = rf.log[pos].Index
+				rf.nextIndex[serverNo] = min(rf.nextIndex[serverNo], rf.log[pos].Index)
 			} else {
-				rf.nextIndex[serverNo] = reply.XIndex
+				rf.nextIndex[serverNo] = min(rf.nextIndex[serverNo], reply.XIndex)
 			}
 		}
 		DPrintf("[%v]AppendEntries RPC To %d Failed, Decrease NextIndex To %d And Re-Try\n",
@@ -313,7 +313,7 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		for i < int32(len(rf.log)) && j < len(args.Entries) {
 			entry1, entry2 := rf.log[i], args.Entries[j]
 			if entry1.Term != entry2.Term {
-				// 日志发生冲突, 截断, 去掉rf.log[i]
+				// 日志发生冲突, 截断, 去掉rf.log[:i]
 				rf.log = rf.log[:i]
 				break
 			}
@@ -348,16 +348,23 @@ func (rf *Raft) sendCommitedLogToTester() {
 	defer rf.applyChMutex.Unlock()
 
 	rf.mu.Lock()
+	// 发送snapshot
+	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
+		DPrintf("[%v]Send Snapshot To Tester, LastIncludeIndex:%d", rf.getServerDetail(), rf.snapshot.LastIncludedIndex)
+		rf.sendSnapshotToTester(rf.snapshot)
+		rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
+		DPrintf("[%v]Update lastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+	}
 	if rf.lastApplied >= rf.commitIndex {
 		rf.mu.Unlock()
 		return
 	}
 	st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
-	subLog := rf.log[st : ed+1]
-	logs := make([]LogEntry, len(subLog))
-	copy(logs, subLog)
+	commitLogs := rf.log[st : ed+1]
+	logs := make([]LogEntry, len(commitLogs))
+	copy(logs, commitLogs)
 	DPrintf("[%v]LastApplied:%d,pos%d CommitIndex:%d,pos:%d, FirstLogIdx:%d", rf.getServerDetail(), rf.lastApplied, st, rf.commitIndex, ed, rf.log[st].Index)
-	rf.lastApplied = logs[len(logs)-1].Index
+	rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
 	rf.mu.Unlock()
 
 	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index)

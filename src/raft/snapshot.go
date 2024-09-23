@@ -102,10 +102,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	rf.log = rf.log[idx+1:]
 	rf.persist()
 	DPrintf("[%v]LastIncludedIndex:%d, LastApplied:%d", rf.getServerDetail(), rf.snapshot.LastIncludedIndex, rf.lastApplied)
-	if rf.snapshot.LastIncludedIndex > rf.lastApplied {
-		DPrintf("[%v]Send Snapshot To Tester", rf.getServerDetail())
-		rf.sendSnapshotToTester(rf.snapshot)
-	}
+	go rf.sendCommitedLogToTester()
 	DPrintf("[%v]After Build Snapshot, Log Length:%d, LastLogIdx:%d", rf.getServerDetail(), len(rf.log), rf.getLastLogIndex())
 }
 
@@ -117,7 +114,6 @@ func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
 		Snapshot:      snapshot.Data,
 	}
 	rf.applyCh <- msg
-	rf.lastApplied = max(rf.snapshot.LastIncludedIndex, rf.lastApplied)
 	DPrintf("[%v]Success Send Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
 }
 
