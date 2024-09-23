@@ -32,8 +32,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	DPrintf("[%s]Get Vote Request:%v", rf.getServerDetail(), *args)
 
-	rf.closeElectionTimer()
-
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	reply.VoteGranted = false
@@ -58,6 +56,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		DPrintf("[%s]RequestVote Candidate Log Is Too Old", rf.getServerDetail())
 		return
 	}
+
+	rf.closeElectionTimer()
 
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
