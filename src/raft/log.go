@@ -265,11 +265,25 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		}
 		rf.persist()
 	}
+
 	// args.Term == term
 	if rf.getRole() == CANDIDATE {
 		rf.setRole(FOLLOWER)
 		rf.votedFor = args.LeaderId
 		rf.persist()
+	}
+
+	// 处理snapshot.LastLogIndex大于prevLogIndex的情况
+	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > args.PrevLogIndex {
+		if len(args.Entries) != 0 {
+			idx := 0
+			for idx < len(args.Entries) && args.Entries[idx].Index <= rf.snapshot.LastIncludedIndex {
+				idx++
+			}
+			args.Entries = args.Entries[idx:]
+		}
+		args.PrevLogIndex = rf.snapshot.LastIncludedIndex
+		args.PrevLogTerm = rf.snapshot.LastIncludedTerm
 	}
 
 	// 没有与prevLogIndex、prevLogTerm匹配的项
@@ -344,10 +358,10 @@ func (rf *Raft) sendCommitedLogToTester() {
 	rf.mu.Lock()
 	// 发送snapshot
 	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
-		DPrintf("[%v]Send Snapshot To Tester, LastIncludeIndex:%d", rf.getServerDetail(), rf.snapshot.LastIncludedIndex)
+		DPrintf("[%v]Send Snapshot %d To Testerd", rf.getServerDetail(), rf.snapshot)
 		rf.sendSnapshotToTester(rf.snapshot)
 		rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
-		DPrintf("[%v]Update lastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+		DPrintf("[%v]Success Send Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
 	}
 	if rf.lastApplied >= rf.commitIndex {
 		rf.mu.Unlock()
@@ -373,12 +387,10 @@ func (rf *Raft) sendCommitedLogToTester() {
 
 func (rf *Raft) sendHeartbeat() {
 	DPrintf("[%v]Become Leader, Start Send Heartbeat", rf.getServerDetail())
-	times := 0
 	gap := time.Duration(100) * time.Millisecond
 	// 每隔100ms检查，给100ms内没有发送数据的Follower发送心跳
 	for !rf.killed() && rf.isLeader() {
-		times++
-		DPrintf("[%v]%dth Sending Heartbeat", rf.getServerDetail(), times)
+		DPrintf("[%v]Sending Heartbeat", rf.getServerDetail())
 		for idx := range rf.peers {
 			if idx == int(rf.me) {
 				continue
