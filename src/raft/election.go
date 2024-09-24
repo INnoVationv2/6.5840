@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"sync/atomic"
 	"time"
 )
 
@@ -14,7 +15,6 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	Term        int32
 	VoteGranted bool
-	ServerIDx   int32
 }
 
 func (rf *Raft) buildRequestVoteArgs() *RequestVoteArgs {
@@ -35,34 +35,37 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	reply.VoteGranted = false
+	candidateId := args.CandidateId
 
 	if args.Term < currentTerm {
-		DPrintf("[%s]RequestVote Term Is Expired", rf.getServerDetail())
+		DPrintf("[%s]Candidate:%d Term:%d < My Term:%d, Not Vote",
+			rf.getServerDetail(), candidateId, args.Term, currentTerm)
 		return
 	}
 
 	if args.Term > currentTerm {
+		DPrintf("[%v]Candidate:%d Term:%d > My Term:%d, Turn To Follower", rf.getServerDetail(), candidateId, args.Term, currentTerm)
 		rf.turnToFollower(args.Term, -1)
 		rf.persist()
 		reply.Term = args.Term
 	} else if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-		DPrintf("[%s]Already Voted In This Term", rf.getServerDetail())
+		DPrintf("[%s]Already Vote To %d In Term:%d", rf.getServerDetail(), rf.votedFor, currentTerm)
 		return
 	}
 
 	// 比较日志，只投给日志至少和自己一样新的Candidate
 	lastLogIdx, lastLogTerm := rf.getLastLogIndex(), rf.getLastLogTerm()
 	if !compareLog(args.LastLogIndex, args.LastLogTerm, lastLogIdx, lastLogTerm) {
-		DPrintf("[%s]RequestVote Candidate Log Is Too Old", rf.getServerDetail())
+		DPrintf("[%s]Candidate:%d Log Is Too Old", rf.getServerDetail(), args.CandidateId)
 		return
 	}
 
+	// 如果投票给对方，就重置选举超时器，防止冲突
 	rf.closeElectionTimer()
-
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
 	rf.persist()
-	DPrintf("[%s]Vote", rf.getServerDetail())
+	DPrintf("[%s]Vote To %d", rf.getServerDetail(), rf.votedFor)
 }
 
 func (rf *Raft) ticker() {
@@ -100,68 +103,48 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) startElection(args *RequestVoteArgs) {
 	DPrintf("[%s]Timeout!!! Start New Election", rf.getServerDetail())
-	voteReplyChan := make(chan *RequestVoteReply, len(rf.peers))
-	for idx := range rf.peers {
-		if int32(idx) == rf.me {
+	voteCount := rf.majority
+	for serverNo := range rf.peers {
+		if int32(serverNo) == rf.me {
 			continue
 		}
-		serverIdx := idx
-		go func() {
-			reply := &RequestVoteReply{ServerIDx: int32(serverIdx)}
-			ok := rf.sendRequestVote(serverIdx, args, reply)
-			if !ok {
-				reply.VoteGranted = false
-			}
-			voteReplyChan <- reply
-		}()
+		go rf.requestVote(serverNo, args, &voteCount)
 	}
-
-	voteCount, replyNum := int32(0), len(rf.peers)-1
-	for replyNum > 0 && !rf.killed() {
-		replyNum--
-		select {
-		case reply := <-voteReplyChan:
-			rf.mu.Lock()
-			if rf.getRole() != CANDIDATE || args.Term != rf.currentTerm || rf.killed() {
-				DPrintf("[%v]Stop Election", rf.getServerDetail())
-				rf.mu.Unlock()
-				return
-			}
-
-			if reply.VoteGranted == true {
-				DPrintf("[%v]%d Vote", rf.getServerDetail(), reply.ServerIDx)
-				voteCount++
-				if voteCount >= rf.majority {
-					DPrintf("[%v]Get Majority Vote, Become Leader", rf.getServerDetail())
-					rf.turnToLeader()
-					rf.persist()
-					rf.mu.Unlock()
-					go rf.sendHeartbeat()
-					return
-				}
-			} else {
-				DPrintf("[%v]%d Not Vote", rf.getServerDetail(), reply.ServerIDx)
-				if reply.Term > rf.currentTerm {
-					DPrintf("[%s]Server %d's Term>CurrentTerm, Back To Follower", rf.getServerDetail(), reply.ServerIDx)
-					rf.turnToFollower(reply.Term, -1)
-					rf.persist()
-					rf.mu.Unlock()
-					return
-				}
-			}
-			rf.mu.Unlock()
-		}
-	}
-
-	DPrintf("[%s]Term:%d Not Get Majority Vote", rf.getServerDetail(), args.Term)
 }
 
-func (rf *Raft) sendRequestVote(idx int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	DPrintf("[%v]Send Request Vote RPC To %d", rf.getServerDetail(), idx)
-	ok := rf.peers[idx].Call("Raft.RequestVote", args, reply)
+func (rf *Raft) requestVote(serverNo int, args *RequestVoteArgs, voteCount *int32) {
+	DPrintf("[%v]Send Request Vote RPC To %d", rf.getServerDetail(), serverNo)
+	reply := &RequestVoteReply{}
+	ok := rf.peers[serverNo].Call("Raft.RequestVote", args, reply)
 	if !ok {
-		DPrintf("[%v]Send Request Vote To %d Timeout.", rf.getServerDetail(), idx)
-		return false
+		DPrintf("[%v]Send Request Vote To %d Timeout.", rf.getServerDetail(), serverNo)
+		return
 	}
-	return true
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.getRole() != CANDIDATE || args.Term != rf.currentTerm || rf.killed() {
+		DPrintf("[%v]Stop Election", rf.getServerDetail())
+		return
+	}
+
+	if reply.VoteGranted == false {
+		DPrintf("[%v]%d Not Vote", rf.getServerDetail(), serverNo)
+		if reply.Term > rf.currentTerm {
+			DPrintf("[%s]Server %d's Term>CurrentTerm, Back To Follower", rf.getServerDetail(), serverNo)
+			rf.turnToFollower(reply.Term, -1)
+			rf.persist()
+		}
+		return
+	}
+
+	DPrintf("[%v]%d Vote", rf.getServerDetail(), serverNo)
+	if atomic.AddInt32(voteCount, -1) == 0 {
+		DPrintf("[%v]Get Majority Vote, Become Leader", rf.getServerDetail())
+		rf.turnToLeader()
+		rf.persist()
+		go rf.sendHeartbeat()
+		return
+	}
 }
