@@ -4,9 +4,10 @@ import "fmt"
 
 const (
 	OK             = "OK"
-	Pending        = "Pending"
 	ErrWrongLeader = "ErrWrongLeader"
+	Killed         = "Killed"
 	LogNotMatch    = "LogNotMatch"
+	TermChanged    = "TermChanged"
 )
 
 type Err string
@@ -32,7 +33,7 @@ func (ck *Clerk) buildGetArg(key string) *GetArgs {
 }
 
 func (args *GetArgs) String() string {
-	return fmt.Sprintf("{Get %s}", args.Key)
+	return fmt.Sprintf("{Get %s,ClientId:%d,CmdId:%d}", args.Key, args.ClientId, args.CommandId)
 }
 
 func (args *GetArgs) GetCommandId() int32 {
@@ -57,7 +58,7 @@ func (ck *Clerk) buildPutAppendArg(key, value string) *PutAppendArgs {
 }
 
 func (args *PutAppendArgs) String() string {
-	return fmt.Sprintf("{Key:%s,Val:%s}", args.Key, args.Value)
+	return fmt.Sprintf("{Key:%s,Val:%s,ClientId:%d,CmdId:%d}", args.Key, args.Value, args.ClientId, args.CommandId)
 }
 
 func (args *PutAppendArgs) GetCommandId() int32 {

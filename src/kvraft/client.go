@@ -27,23 +27,24 @@ func (ck *Clerk) getCommandId() int32 {
 }
 
 func (ck *Clerk) Get(key string) string {
-	DPrintf("[Client %d]Get RPC", ck.id)
+	DPrintf("[Client %d]Get RPC Start", ck.id)
 	args := ck.buildGetArg(key)
 	reply := &GetReply{}
 	ck.CallServer("Get", args, reply)
+	DPrintf("[Client]Get RPC Complete {%v->%v}", key, reply.Value)
 	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	DPrintf("[Client %d]Put RPC", ck.id)
+	DPrintf("[Client %d]Put RPC Start", ck.id)
 	ck.PutAppend(key, value, "Put")
-	DPrintf("[Client]Put {%v,%v} Complete", key, value)
+	DPrintf("[Client]Put RPC Complete {%v,%v}", key, value)
 }
 
 func (ck *Clerk) Append(key string, value string) {
-	DPrintf("[Client %d]Append RPC", ck.id)
+	DPrintf("[Client %d]Append RPC Start", ck.id)
 	ck.PutAppend(key, value, "Append")
-	DPrintf("[Client]Append {%v,%v} Complete", key, value)
+	DPrintf("[Client]Append RPC Complete {%v,%v}", key, value)
 }
 
 func (ck *Clerk) PutAppend(key string, value string, op string) {
@@ -56,16 +57,21 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 	leaderId := atomic.LoadInt32(&ck.leaderId)
 	serverNo := leaderId
 	for {
-		DPrintf("[Client]Send Command RPC %s %v To KvServer %d", op, args, serverNo)
+		DPrintf("[Client]Send Command RPC %v To KvServer %d", args, serverNo)
 		ok := ck.servers[serverNo].Call("KVServer."+op, args, reply)
-		if !ok || reply.getErr() != OK {
-			DPrintf("[Client]Send Command %v To KvServer %d failed:%v, Retring...", args, serverNo, reply.getErr())
+		if !ok || reply.getErr() == Killed || reply.getErr() == ErrWrongLeader {
+			DPrintf("[Client]Send Command RPC %v To KvServer %d Failed:%v, Retring...", args, serverNo, reply.getErr())
 			serverNo = (serverNo + 1) % int32(len(ck.servers))
 			if serverNo == leaderId {
 				DPrintf("[Client]No Leader, Wait Some Time Then Retry...")
 				// 试了一圈都没有Leader，说明当前没有Leader，等一会儿再试
 				time.Sleep(time.Millisecond * 400)
 			}
+			continue
+		}
+		// 不需要切换ServerNo，直接尝试
+		if reply.getErr() == LogNotMatch || reply.getErr() == TermChanged {
+			DPrintf("[Client]Send Command RPC %v To KvServer %d failed:%v, Retring...", args, serverNo, reply.getErr())
 			continue
 		}
 		break

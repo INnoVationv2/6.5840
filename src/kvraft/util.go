@@ -1,6 +1,18 @@
 package kvraft
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
+
+const Debug = false
+
+func DPrintf(format string, a ...interface{}) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 func max(x, y int32) int32 {
 	if x >= y {
