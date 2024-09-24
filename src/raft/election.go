@@ -66,6 +66,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) ticker() {
+	// For Crash Recover Use
+	if rf.role == LEADER {
+		go rf.sendHeartbeat()
+	}
 	DPrintf("[%s]Join To Cluster", rf.getServerDetail())
 	for !rf.killed() {
 		time.Sleep(getRandomTimeoutMs())
