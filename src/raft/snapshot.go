@@ -24,6 +24,10 @@ type Snapshot struct {
 	Data              []byte
 }
 
+func (snapshot *Snapshot) String() string {
+	return fmt.Sprintf("{LastIncludedIndex:%d LastIncludedTerm:%d}", snapshot.LastIncludedIndex, snapshot.LastIncludedTerm)
+}
+
 func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
 	snapshot := &InstallSnapshot{
 		Term:              rf.currentTerm,
@@ -74,6 +78,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	if args.Term < term {
 		return
 	}
+
 	rf.closeElectionTimer()
 
 	if args.Term > term || rf.getRole() == CANDIDATE {
@@ -102,9 +107,9 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	}
 	rf.log = rf.log[idx+1:]
 	rf.persist()
-	DPrintf("[%v]LastIncludedIndex:%d, LastApplied:%d", rf.getServerDetail(), rf.snapshot.LastIncludedIndex, rf.lastApplied)
 	go rf.sendCommitedLogToTester()
-	DPrintf("[%v]After Build Snapshot, Log Length:%d, LastLogIdx:%d", rf.getServerDetail(), len(rf.log), rf.getLastLogIndex())
+	DPrintf("[%v]Success Build Snapshot:%v", rf.getServerDetail(), rf.snapshot)
+	DPrintf("[%v]After Build Snapshot, LastLogIdx:%d Log Length:%d", rf.getServerDetail(), rf.getLastLogIndex(), len(rf.log))
 }
 
 func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
@@ -117,7 +122,7 @@ func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
 	rf.applyCh <- msg
 }
 
-// 只有在提交Command到Chan时，SnapShot才可能被调用
+// 只有Send Command到Chan时，该方法才可能被调用
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -139,5 +144,5 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapshot = snap
 	rf.persist()
 
-	DPrintf("[%v]Remov Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, SnapSize:%d", rf.getServerDetail(), rf.getLastLogIndex(), rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.snapshot.Data))
+	DPrintf("[%v]Remove Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, SnapSize:%d", rf.getServerDetail(), index, rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.snapshot.Data))
 }
