@@ -134,7 +134,6 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 			}
 		}()
 	}
-	DPrintf("[%v]syncLogWithFollower Complete", rf.getServerDetail())
 }
 
 func (rf *Raft) updateCommitIndex(term int32) {
@@ -165,7 +164,10 @@ func (rf *Raft) sendEntriesToFollower(term int32, serverNo int, heartbeat bool) 
 	reply := &AppendEntriesReply{}
 	for !rf.killed() {
 		rf.mu.Lock()
+		DPrintf("[%v]Sync Log Entry With Follower %d", rf.getServerDetail(), serverNo)
 		if rf.getRole() != LEADER || term != rf.currentTerm {
+			DPrintf("[%v]Stop Sync Log With %d, Role:%v, term:%d, currentTerm:%d",
+				rf.getServerDetail(), serverNo, rf.getRole(), term, rf.currentTerm)
 			rf.mu.Unlock()
 			return ERROR
 		}
@@ -178,6 +180,7 @@ func (rf *Raft) sendEntriesToFollower(term int32, serverNo int, heartbeat bool) 
 
 		rf.buildAppendEntriesArgs(args, serverNo, heartbeat)
 		if !heartbeat && len(args.Entries) == 0 {
+			DPrintf("[%v]Stop Sync Log With %d, Args.Entries is 0", rf.getServerDetail(), serverNo)
 			rf.mu.Unlock()
 			return ERROR
 		}
