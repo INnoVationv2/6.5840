@@ -83,6 +83,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 		rf.persist()
 	}
 
+	// snapshot中保存的是commitLog，所以和Commit Log一样，只能向前推进
 	if rf.snapshot != nil && args.LastIncludedIndex <= rf.snapshot.LastIncludedIndex {
 		return
 	}
@@ -114,7 +115,6 @@ func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
 		Snapshot:      snapshot.Data,
 	}
 	rf.applyCh <- msg
-	DPrintf("[%v]Success Send Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
 }
 
 // 只有在提交Command到Chan时，SnapShot才可能被调用
