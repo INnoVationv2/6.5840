@@ -115,6 +115,7 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 		go func() {
 			var status int
 			for !rf.killed() && rf.getRole() == LEADER {
+				DPrintf("[%v]Send Entries To Follower %d", rf.getServerDetail(), serverNo)
 				status = rf.sendEntriesToFollower(term, serverNo, false)
 				// 如果是发送超时或者snapshot发送完成, 需要重试发送
 				if status == TIMEOUT {
@@ -215,7 +216,7 @@ func (rf *Raft) sendEntriesToFollower(term int32, serverNo int, heartbeat bool) 
 
 		// 接下来都是reply.Success = false
 		if reply.Term > rf.currentTerm {
-			DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
+			DPrintf("[%v]Follower:%d Term > My Term, Back To Follower\n", rf.getServerDetail(), serverNo)
 			rf.turnToFollower(reply.Term, -1)
 			rf.persist()
 			rf.mu.Unlock()

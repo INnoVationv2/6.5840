@@ -5,19 +5,10 @@ import (
 	"6.5840/labrpc"
 	"6.5840/raft"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
-
-const Debug = true
-
-func DPrintf(format string, a ...interface{}) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
 
 const (
 	GET    = "GET"
@@ -26,22 +17,41 @@ const (
 )
 
 type Command struct {
-	Type   string
-	Key    string
-	Value  string
-	Status Err
+	ClientId int64
+	Type     string
+	Key      string
+	Value    string
+	Status   Err
 }
 
 func (cmd *Command) String() string {
 	return fmt.Sprintf("{%v %v:%v}", cmd.Type, cmd.Key, cmd.Value)
 }
 
-func buildCommand(opType string, str ...string) *Command {
-	cmd := Command{Type: opType, Key: str[0], Status: Pending}
+func buildCommand(opType string, clientId int64, str ...string) *Command {
+	cmd := Command{Type: opType, Key: str[0], Status: OK, ClientId: clientId}
 	if opType == PUT || opType == APPEND {
 		cmd.Value = str[1]
 	}
 	return &cmd
+}
+
+type CommandWarp struct {
+	Cmd      *Command
+	ClientId int64
+	CmdId    int32
+}
+
+func (w *CommandWarp) String() string {
+	return fmt.Sprintf("{%v %v:%v}", w.Cmd, w.ClientId, w.CmdId)
+}
+
+func buildCommandWarp(cmd *Command, clientId int64, cmdId int32) *CommandWarp {
+	return &CommandWarp{
+		Cmd:      cmd,
+		ClientId: clientId,
+		CmdId:    cmdId,
+	}
 }
 
 type KVServer struct {
@@ -54,15 +64,18 @@ type KVServer struct {
 
 	maxraftstate int
 
-	raftTerm      int32
+	raftTerm int32
+	// 用于记录已经执行的最大的LogEntry的Index
 	appliedLogIdx int32
-	submitCmd     map[int]*Command
+	prevCmd       map[int64]*Command
+	submitCmd     map[int]*CommandWarp
 
 	db map[string]string
 
-	duplicateCheckMu sync.Mutex
-	history          map[int64]map[int32]string
-	matchIndex       map[int64]int32
+	//duplicateCheckMu sync.Mutex
+	history map[int64]map[int32]string
+	// 用于记录Server已经执行的最大的Command Index
+	matchIndex map[int64]int32
 }
 
 func (kv *KVServer) checkIfCommandAlreadyExecuted(clientId int64, commandId int32) bool {
@@ -73,75 +86,57 @@ func (kv *KVServer) checkIfCommandAlreadyExecuted(clientId int64, commandId int3
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	DPrintf("[%v]Received Get RPC:%v", kv.getServerDetail(), args)
 	clientId, cmdId := args.ClientId, args.CommandId
 
 	// 如果是重复命令，直接返回之前的结果
-	kv.duplicateCheckMu.Lock()
+	kv.mu.Lock()
 	if kv.checkIfCommandAlreadyExecuted(clientId, cmdId) {
 		DPrintf("[%s]Dupliacte Get Reuqest %v", kv.getServerDetail(), args)
 		reply.Err = OK
 		reply.Value = kv.history[clientId][cmdId]
-		kv.duplicateCheckMu.Unlock()
+		kv.mu.Unlock()
 		return
 	}
-	kv.duplicateCheckMu.Unlock()
+	kv.mu.Unlock()
 
-	cmd := buildCommand(GET, args.Key)
-	kv.submitCommand(cmd)
+	cmd := buildCommand(GET, args.ClientId, args.Key)
+	cmdWarp := buildCommandWarp(cmd, clientId, cmdId)
+	kv.submitCommand(cmdWarp)
 	reply.Err = cmd.Status
 	if reply.Err != OK {
 		DPrintf("[%s]Submit Command %v Failed:%v", kv.getServerDetail(), args, reply.Err)
 		return
 	}
-
 	reply.Value = cmd.Value
-
-	kv.duplicateCheckMu.Lock()
-	defer kv.duplicateCheckMu.Unlock()
-	if kv.history[clientId] == nil {
-		kv.history[clientId] = make(map[int32]string)
-	}
-	kv.history[clientId][cmdId] = cmd.Value
-	kv.matchIndex[clientId] = max(cmdId, kv.matchIndex[clientId])
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
+	DPrintf("[%v]Received PUT RPC:%v", kv.getServerDetail(), args)
 	kv.PutAppend(args, reply, PUT)
-	if reply.Err != OK {
-		return
-	}
-
-	kv.duplicateCheckMu.Lock()
-	defer kv.duplicateCheckMu.Unlock()
-	kv.matchIndex[args.ClientId] = max(args.CommandId, kv.matchIndex[args.ClientId])
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
+	DPrintf("[%v]Received Append RPC:%v", kv.getServerDetail(), args)
 	kv.PutAppend(args, reply, APPEND)
-	if reply.Err != OK {
-		return
-	}
-
-	kv.duplicateCheckMu.Lock()
-	defer kv.duplicateCheckMu.Unlock()
-	kv.matchIndex[args.ClientId] = max(args.CommandId, kv.matchIndex[args.ClientId])
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply, op string) {
 	clientId, cmdId := args.ClientId, args.CommandId
 
 	// Check If Already Execute
-	kv.duplicateCheckMu.Lock()
+	kv.mu.Lock()
 	if kv.checkIfCommandAlreadyExecuted(clientId, cmdId) {
 		DPrintf("[%s]Dupliacte %s Reuqest %v", kv.getServerDetail(), op, args)
 		reply.Err = OK
-		kv.duplicateCheckMu.Unlock()
+		kv.mu.Unlock()
 		return
 	}
-	kv.duplicateCheckMu.Unlock()
+	kv.mu.Unlock()
 
-	cmd := buildCommand(op, args.Key, args.Value)
-	kv.submitCommand(cmd)
+	cmd := buildCommand(op, args.ClientId, args.Key, args.Value)
+	cmdWarp := buildCommandWarp(cmd, clientId, cmdId)
+	kv.submitCommand(cmdWarp)
 	reply.Err = cmd.Status
 	if reply.Err != OK {
 		DPrintf("[%v]Command %v failed:%v", kv.getServerDetail(), cmd, reply.Err)
@@ -149,39 +144,42 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply, op str
 	}
 }
 
-func (kv *KVServer) submitCommand(cmd *Command) {
+func (kv *KVServer) submitCommand(cmdWarp *CommandWarp) {
+	DPrintf("[%v]SubmitCommand", kv.getServerDetail())
 	kv.mu.Lock()
-	cmdIdx, _, isLeader := kv.rf.Start(*cmd)
+	cmd := cmdWarp.Cmd
+	cmdIdx, term, isLeader := kv.rf.Start(*cmd)
 	if !isLeader {
 		cmd.Status = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
-	kv.submitCmd[cmdIdx] = cmd
+	kv.setRaftTerm(int32(term))
+	kv.submitCmd[cmdIdx] = cmdWarp
 	kv.mu.Unlock()
 
-	DPrintf("[%s]Submit Command %v To Raft, Index:%d", kv.getServerDetail(), cmd, cmdIdx)
-	for !kv.killed() && kv.getAppliedLogIdx() < int32(cmdIdx) {
+	DPrintf("[%s]Submit Command %v To Raft, Index:%d, Term:%d", kv.getServerDetail(), cmdWarp, cmdIdx, term)
+	for !kv.killed() && kv.getAppliedLogIdx() < int32(cmdIdx) && kv.getRaftTerm() == int32(term) {
 	}
 
 	if cmd.Status == LogNotMatch {
-		cmd.Status = ErrWrongLeader
-		DPrintf("[%s]Command %v Is Expired, Need Re-Submit To KVServer", kv.getServerDetail(), cmd)
+		DPrintf("[%s]Command %v Not Match, Need Re-Submit To KVServer", kv.getServerDetail(), cmd)
+	}
+
+	if kv.getRaftTerm() != int32(term) {
+		cmd.Status = TermChanged
+		DPrintf("[%s]Command %v Is Expired, SubmitTerm:%d, CurrentTerm:%d, Need Re-Submit To KVServer",
+			kv.getServerDetail(), cmd, term, kv.getRaftTerm())
 	}
 
 	if kv.killed() {
-		cmd.Status = OK
+		cmd.Status = Killed
 	}
-
-	kv.mu.Lock()
-	delete(kv.submitCmd, cmdIdx)
-	kv.mu.Unlock()
 }
 
 // check apply chan, Update appliedLogIdx
 func (kv *KVServer) ticker() {
 	DPrintf("[%s]Ticker Start", kv.getServerDetail())
-
 	for {
 		select {
 		case msg := <-kv.applyCh:
@@ -189,45 +187,75 @@ func (kv *KVServer) ticker() {
 			DPrintf("[%s]Receive Command %d:%v From Raft applyChan", kv.getServerDetail(), cmdIdx, cmd)
 
 			kv.applyCommand(cmdIdx, &cmd)
-			atomic.StoreInt32(&kv.appliedLogIdx, int32(cmdIdx))
+			kv.setAppliedLogIdx(int32(cmdIdx))
+			kv.prevCmd[cmd.ClientId] = &cmd
 		case <-kv.killCh:
-			DPrintf("[%s]Ticker End", kv.getServerDetail())
+			DPrintf("[%s]Sever Been Killed, Ticker End", kv.getServerDetail())
 			return
 		}
 	}
 }
 
 func (kv *KVServer) applyCommand(cmdIdx int, cmd *Command) {
-	switch cmd.Type {
-	case PUT:
-		kv.db[cmd.Key] = cmd.Value
-	case APPEND:
+	prevCmd, ok := kv.prevCmd[cmd.ClientId]
+	if !ok || !compareCommand(cmd, prevCmd) {
+		switch cmd.Type {
+		case PUT:
+			kv.db[cmd.Key] = cmd.Value
+		case APPEND:
+			val, ok := kv.db[cmd.Key]
+			if !ok {
+				val = ""
+			}
+			kv.db[cmd.Key] = val + cmd.Value
+		}
+	}
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	cmdWarp, ok := kv.submitCmd[cmdIdx]
+	if !ok {
+		return
+	}
+
+	cmd2 := cmdWarp.Cmd
+	if !compareCommand(cmd, cmd2) {
+		DPrintf("[%v]Log At %d Not Match, Return", kv.getServerDetail(), cmdIdx)
+		cmd2.Status = LogNotMatch
+		return
+	}
+	kv.updateState(cmdWarp)
+	delete(kv.submitCmd, cmdIdx)
+}
+
+func (kv *KVServer) updateState(cmdWarp *CommandWarp) {
+	cmd, clientId, cmdId := cmdWarp.Cmd, cmdWarp.ClientId, cmdWarp.CmdId
+
+	cmd.Status = OK
+	kv.matchIndex[clientId] = max(kv.matchIndex[clientId], cmdId)
+	DPrintf("[%v]Update Match Index To %d", kv.getServerDetail(), kv.matchIndex[clientId])
+
+	if cmd.Type == GET {
 		val, ok := kv.db[cmd.Key]
 		if !ok {
 			val = ""
 		}
-		kv.db[cmd.Key] = val + cmd.Value
-	case GET:
-	}
-
-	kv.mu.Lock()
-	cmd2, ok := kv.submitCmd[cmdIdx]
-	kv.mu.Unlock()
-	if !ok {
-		return
-	}
-	if !compareCommand(cmd, cmd2) {
-		cmd2.Status = LogNotMatch
-		return
-	}
-	cmd2.Status = OK
-	if cmd.Type == GET {
-		val, ok := kv.db[cmd.Key]
-		if !ok {
-			cmd2.Value = ""
-		} else {
-			cmd2.Value = val
+		cmd.Value = val
+		if kv.history[clientId] == nil {
+			kv.history[clientId] = make(map[int32]string)
 		}
+		kv.history[clientId][cmdId] = val
+	}
+}
+
+func (kv *KVServer) monitorTerm() {
+	for {
+		term, _ := kv.rf.GetState()
+		if int32(term) != kv.getRaftTerm() {
+			DPrintf("[%s]Raft Term Change:%d-->%d", kv.getServerDetail(), kv.getRaftTerm(), term)
+			kv.setRaftTerm(int32(term))
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -246,10 +274,8 @@ func (kv *KVServer) Report(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	clientID, cmdId := args.ClientId, args.CommandId
-
-	kv.duplicateCheckMu.Lock()
+	DPrintf("[%v]Receive Report RPC %v, Delete History", kv.getServerDetail(), args)
 	delete(kv.history[clientID], cmdId)
-	kv.duplicateCheckMu.Unlock()
 }
 
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
@@ -265,9 +291,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.db = make(map[string]string)
 	kv.history = make(map[int64]map[int32]string)
 	kv.matchIndex = make(map[int64]int32)
-	kv.submitCmd = make(map[int]*Command)
+	kv.submitCmd = make(map[int]*CommandWarp)
+	kv.prevCmd = make(map[int64]*Command)
 
 	go kv.ticker()
+	go kv.monitorTerm()
 
 	return kv
 }
