@@ -85,7 +85,9 @@ func (ck *Clerk) Report(serverNo int32, arg Args) {
 	cmdId := arg.GetCommandId()
 	args, reply := GetArgs{ClientId: ck.id, CommandId: cmdId}, GetReply{}
 	DPrintf("[Client]Command %d Is Complete, Send Report RPC To Server %d", cmdId, serverNo)
-	ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
+	for ok := false; !ok; {
+		ok = ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
+	}
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {

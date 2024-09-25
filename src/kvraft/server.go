@@ -327,6 +327,7 @@ func (kv *KVServer) Report(args *GetArgs, reply *GetReply) {
 	clientID, cmdId := args.ClientId, args.CommandId
 	DPrintf("[%v]Receive Report RPC %v, Delete History", kv.getServerDetail(), args)
 	delete(kv.history[clientID], cmdId)
+	reply.Err = OK
 }
 
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
