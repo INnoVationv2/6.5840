@@ -5,7 +5,7 @@ import (
 	"log"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
@@ -19,6 +19,13 @@ func max(x, y int32) int32 {
 		return x
 	}
 	return y
+}
+
+func abs(x int32) int32 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func compareCommand(cmd1 *Command, cmd2 *Command) bool {

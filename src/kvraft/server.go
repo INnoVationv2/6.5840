@@ -4,7 +4,9 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"bytes"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,15 +66,16 @@ type KVServer struct {
 
 	maxraftstate int
 
+	raftPersister *raft.Persister
+
 	raftTerm int32
 	// 用于记录已经执行的最大的LogEntry的Index
 	appliedLogIdx int32
-	prevCmd       map[int64]*Command
-	submitCmd     map[int]*CommandWarp
+	prevCmd       map[int64]Command
+	submitCmd     map[int]CommandWarp
 
 	db map[string]string
 
-	//duplicateCheckMu sync.Mutex
 	history map[int64]map[int32]string
 	// 用于记录Server已经执行的最大的Command Index
 	matchIndex map[int64]int32
@@ -155,7 +158,7 @@ func (kv *KVServer) submitCommand(cmdWarp *CommandWarp) {
 		return
 	}
 	kv.setRaftTerm(int32(term))
-	kv.submitCmd[cmdIdx] = cmdWarp
+	kv.submitCmd[cmdIdx] = *cmdWarp
 	kv.mu.Unlock()
 
 	DPrintf("[%s]Submit Command %v To Raft, Index:%d, Term:%d", kv.getServerDetail(), cmdWarp, cmdIdx, term)
@@ -183,12 +186,21 @@ func (kv *KVServer) ticker() {
 	for {
 		select {
 		case msg := <-kv.applyCh:
-			cmdIdx, cmd := msg.CommandIndex, msg.Command.(Command)
-			DPrintf("[%s]Receive Command %d:%v From Raft applyChan", kv.getServerDetail(), cmdIdx, cmd)
+			kv.mu.Lock()
+			if msg.SnapshotValid {
+				DPrintf("[%s]Receive Snapshot From Raft applyChan, LastIncludeIdx:%d", kv.getServerDetail(), msg.SnapshotIndex)
+				kv.readSnapshot(msg.SnapshotIndex, msg.Snapshot)
+			}
 
-			kv.applyCommand(cmdIdx, &cmd)
-			kv.setAppliedLogIdx(int32(cmdIdx))
-			kv.prevCmd[cmd.ClientId] = &cmd
+			if msg.CommandValid {
+				cmdIdx, cmd := msg.CommandIndex, msg.Command.(Command)
+				DPrintf("[%s]Receive Command %d:%v From Raft applyChan", kv.getServerDetail(), cmdIdx, cmd)
+				kv.applyCommand(cmdIdx, &cmd)
+				kv.setAppliedLogIdx(int32(cmdIdx))
+				kv.prevCmd[cmd.ClientId] = cmd
+				kv.checkSnapshot()
+			}
+			kv.mu.Unlock()
 		case <-kv.killCh:
 			DPrintf("[%s]Sever Been Killed, Ticker End", kv.getServerDetail())
 			return
@@ -198,7 +210,7 @@ func (kv *KVServer) ticker() {
 
 func (kv *KVServer) applyCommand(cmdIdx int, cmd *Command) {
 	prevCmd, ok := kv.prevCmd[cmd.ClientId]
-	if !ok || !compareCommand(cmd, prevCmd) {
+	if !ok || !compareCommand(cmd, &prevCmd) {
 		switch cmd.Type {
 		case PUT:
 			kv.db[cmd.Key] = cmd.Value
@@ -211,8 +223,6 @@ func (kv *KVServer) applyCommand(cmdIdx int, cmd *Command) {
 		}
 	}
 
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	cmdWarp, ok := kv.submitCmd[cmdIdx]
 	if !ok {
 		return
@@ -224,7 +234,7 @@ func (kv *KVServer) applyCommand(cmdIdx int, cmd *Command) {
 		cmd2.Status = LogNotMatch
 		return
 	}
-	kv.updateState(cmdWarp)
+	kv.updateState(&cmdWarp)
 	delete(kv.submitCmd, cmdIdx)
 }
 
@@ -246,6 +256,47 @@ func (kv *KVServer) updateState(cmdWarp *CommandWarp) {
 		}
 		kv.history[clientId][cmdId] = val
 	}
+}
+
+func (kv *KVServer) readSnapshot(lastIncludeIndex int, snapshot []byte) {
+	DPrintf("[%v]lastIncludeIndex:%d AppliedLogIdx:%d", kv.getServerDetail(), lastIncludeIndex, kv.appliedLogIdx)
+	if int32(lastIncludeIndex) <= kv.getAppliedLogIdx() {
+		return
+	}
+
+	kv.setAppliedLogIdx(int32(lastIncludeIndex))
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&kv.db) != nil ||
+		d.Decode(&kv.prevCmd) != nil ||
+		d.Decode(&kv.submitCmd) != nil ||
+		d.Decode(&kv.history) != nil ||
+		d.Decode(&kv.matchIndex) != nil {
+		log.Fatalf("[%v]Decode Raft State Failed", kv.getServerDetail())
+	}
+}
+
+func (kv *KVServer) checkSnapshot() {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	DPrintf("[%v]Maxraftstate:%d RaftStateSize:%d", kv.getServerDetail(), kv.maxraftstate, kv.raftPersister.RaftStateSize())
+	if kv.maxraftstate-kv.raftPersister.RaftStateSize() > 50 {
+		return
+	}
+	DPrintf("[%v]Build Snapshot", kv.getServerDetail())
+	// 大小接近，进行snapshot
+	buf := new(bytes.Buffer)
+	e := labgob.NewEncoder(buf)
+	if e.Encode(kv.db) != nil ||
+		e.Encode(kv.prevCmd) != nil ||
+		e.Encode(kv.submitCmd) != nil ||
+		e.Encode(kv.history) != nil ||
+		e.Encode(kv.matchIndex) != nil {
+		log.Fatalf("[%v]Encode KVServer State Failed", kv.getServerDetail())
+	}
+
+	kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
 }
 
 func (kv *KVServer) monitorTerm() {
@@ -284,6 +335,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.raftPersister = persister
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.killCh = make(chan bool)
@@ -291,8 +343,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.db = make(map[string]string)
 	kv.history = make(map[int64]map[int32]string)
 	kv.matchIndex = make(map[int64]int32)
-	kv.submitCmd = make(map[int]*CommandWarp)
-	kv.prevCmd = make(map[int64]*Command)
+	kv.submitCmd = make(map[int]CommandWarp)
+	kv.prevCmd = make(map[int64]Command)
 
 	go kv.ticker()
 	go kv.monitorTerm()
