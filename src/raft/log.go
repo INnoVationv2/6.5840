@@ -120,6 +120,7 @@ func (rf *Raft) syncLogWithFollower(term int32) {
 				// 如果是发送超时或者snapshot发送完成, 需要重试发送
 				if status == TIMEOUT {
 					DPrintf("[%v]Send AppendEntries RPC To %d Timeout, ReSending", rf.getServerDetail(), serverNo)
+					time.Sleep(time.Millisecond * 100)
 					continue
 				} else if status == SNAPSHOTCOMPLETE {
 					DPrintf("[%v]Success Send Snapshot To %d", rf.getServerDetail(), serverNo)
@@ -362,7 +363,7 @@ func (rf *Raft) sendCommitedLogToTester() {
 	rf.mu.Lock()
 	// 发送snapshot
 	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
-		DPrintf("[%v]Send Snapshot %d To Testerd", rf.getServerDetail(), rf.snapshot)
+		DPrintf("[%v]Send Snapshot %v To Testerd", rf.getServerDetail(), rf.snapshot)
 		rf.sendSnapshotToTester(rf.snapshot)
 		rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
 		DPrintf("[%v]Success Send Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
