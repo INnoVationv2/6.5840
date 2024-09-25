@@ -82,12 +82,13 @@ func (rf *Raft) ticker() {
 
 		DPrintf("[%v]Check Timtout.", rf.getServerDetail())
 		if rf.getElectionTimer() == 0 {
+			DPrintf("[%v]Not Timeout", rf.getServerDetail())
 			rf.startElectionTimer()
 			continue
 		}
 
-		rf.mu.Lock()
 		DPrintf("[%s]Election Timout.", rf.getServerDetail())
+		rf.mu.Lock()
 		rf.setRole(CANDIDATE)
 		rf.currentTerm++
 		rf.votedFor = rf.me
