@@ -30,7 +30,7 @@ func (snapshot *Snapshot) String() string {
 
 func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
 	snapshot := &InstallSnapshot{
-		Term:              rf.currentTerm,
+		Term:              rf.getCurrentTerm(),
 		LeaderId:          rf.me,
 		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
 		LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
@@ -43,17 +43,20 @@ func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
 func (rf *Raft) sendSnapshotToFollower(serverNo int, args *InstallSnapshot) int {
 	rf.resetHeartbeatTimer(serverNo)
 
-	DPrintf("[%v]Send Snapshot RPC to follower %d", rf.getServerDetail(), serverNo)
+	DPrintf("[%v]Send Snapshot To %d", rf.getServerDetail(), serverNo)
 	reply := &InstallSnapshotReply{}
 	ok := rf.peers[serverNo].Call("Raft.AcceptSnapshot", args, reply)
 	if !ok {
-		DPrintf("[%v]Send Snapshot RPC to %d timeout", rf.getServerDetail(), serverNo)
+		if rf.checkRaftStatus(args.Term) {
+			return ERROR
+		}
+		DPrintf("[%v]Send Snapshot To %d Timeout", rf.getServerDetail(), serverNo)
 		return TIMEOUT
 	}
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if reply.Term > rf.currentTerm {
+	if reply.Term > rf.getCurrentTerm() {
 		DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
 		rf.turnToFollower(reply.Term, -1)
 		rf.persist()
@@ -72,7 +75,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("[%v]Received Snapshot %v", rf.getServerDetail(), args)
-	term := rf.currentTerm
+	term := rf.getCurrentTerm()
 	reply.Term = term
 
 	if args.Term < term {

@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"runtime"
 	"sort"
 	"time"
 )
 
 // Debugging
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
@@ -34,7 +35,7 @@ func (rf *Raft) getRoleStr() string {
 }
 
 func (rf *Raft) getServerDetail() string {
-	return fmt.Sprintf("%v %d %d_%d", rf.getRoleStr(), rf.currentTerm, rf.name, rf.me)
+	return fmt.Sprintf("%v %d %d_%d", rf.getRoleStr(), rf.getCurrentTerm(), rf.name, rf.me)
 }
 
 func min(x, y int32) int32 {
@@ -73,4 +74,12 @@ func (rf *Raft) findCommitIndex() int32 {
 
 func getCurrentTime() int64 {
 	return time.Now().UnixMilli()
+}
+
+func (rf *Raft) printGoroutineCnt() {
+	for !rf.killed() {
+		fmt.Printf("[%v]当前协程数量:%d\n", rf.getServerDetail(), runtime.NumGoroutine())
+		time.Sleep(time.Second / 10)
+	}
+	fmt.Printf("[%v]Killed, Stop Print Goroutine Cnt\n", rf.getServerDetail())
 }

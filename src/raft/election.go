@@ -19,7 +19,7 @@ type RequestVoteReply struct {
 
 func (rf *Raft) buildRequestVoteArgs() *RequestVoteArgs {
 	return &RequestVoteArgs{
-		Term:         rf.currentTerm,
+		Term:         rf.getCurrentTerm(),
 		CandidateId:  rf.me,
 		LastLogIndex: rf.getLastLogIndex(),
 		LastLogTerm:  rf.getLastLogTerm(),
@@ -32,7 +32,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	DPrintf("[%s]Get Vote Request:%v", rf.getServerDetail(), *args)
 
-	currentTerm := rf.currentTerm
+	currentTerm := rf.getCurrentTerm()
 	reply.Term = currentTerm
 	reply.VoteGranted = false
 	candidateId := args.CandidateId
@@ -90,7 +90,7 @@ func (rf *Raft) ticker() {
 		DPrintf("[%s]Election Timout.", rf.getServerDetail())
 		rf.mu.Lock()
 		rf.setRole(CANDIDATE)
-		rf.currentTerm++
+		rf.incCurrentTerm()
 		rf.votedFor = rf.me
 		rf.closeElectionTimer()
 		rf.persist()
@@ -125,14 +125,14 @@ func (rf *Raft) requestVote(serverNo int, args *RequestVoteArgs, voteCount *int3
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.getRole() != CANDIDATE || args.Term != rf.currentTerm || rf.killed() {
+	if rf.killed() || rf.getRole() != CANDIDATE || args.Term != rf.currentTerm {
 		DPrintf("[%v]Stop Election", rf.getServerDetail())
 		return
 	}
 
 	if reply.VoteGranted == false {
 		DPrintf("[%v]%d Not Vote", rf.getServerDetail(), serverNo)
-		if reply.Term > rf.currentTerm {
+		if reply.Term > rf.getCurrentTerm() {
 			DPrintf("[%s]Server %d's Term>CurrentTerm, Back To Follower", rf.getServerDetail(), serverNo)
 			rf.turnToFollower(reply.Term, -1)
 			rf.persist()
