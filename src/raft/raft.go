@@ -125,12 +125,12 @@ func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
 }
 
 func (rf *Raft) Kill() {
+	rf.killChan <- true
 	atomic.StoreInt32(&rf.dead, 1)
 }
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
-	rf.killChan <- true
 	return z == 1
 }
 
@@ -159,7 +159,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = int32(me)
 	rf.name = rand.Int31() % 100
 	rf.startElectionTimer()
-	rf.killChan = make(chan bool)
+	rf.killChan = make(chan bool, 1)
 
 	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER

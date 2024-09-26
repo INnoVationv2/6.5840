@@ -148,7 +148,6 @@ func (rf *Raft) monitorFinishedSendJob(jobFinishChan chan int) {
 				return
 			}
 		case <-rf.killChan:
-			rf.killChan <- true
 			return
 		}
 	}
