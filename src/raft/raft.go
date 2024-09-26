@@ -172,6 +172,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int32, peerNum)
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 	go rf.ticker()
-	go rf.printGoroutineCnt()
+	go printGoroutineCnt()
 	return rf
 }
