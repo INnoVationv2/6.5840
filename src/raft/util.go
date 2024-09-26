@@ -76,8 +76,8 @@ func getCurrentTime() int64 {
 	return time.Now().UnixMilli()
 }
 
-func printGoroutineCnt() {
-	for {
+func (rf *Raft) printGoroutineCnt() {
+	for !rf.killed() {
 		fmt.Printf("当前协程数量:%d\n", runtime.NumGoroutine())
 		time.Sleep(time.Second / 10)
 	}

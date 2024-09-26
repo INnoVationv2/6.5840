@@ -116,6 +116,12 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 }
 
 func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
+	DPrintf("[%v]Send Snapshot To Tester", rf.getServerDetail())
+	if snapshot == nil {
+		DPrintf("[%v]Snapshot Is Nil", rf.getServerDetail())
+		return
+	}
+	DPrintf("[%v]Send Snapshot %v To Tester", rf.getServerDetail(), snapshot)
 	msg := ApplyMsg{
 		SnapshotValid: true,
 		SnapshotIndex: int(snapshot.LastIncludedIndex),
@@ -147,5 +153,5 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapshot = snap
 	rf.persist()
 
-	DPrintf("[%v]Remove Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, SnapSize:%d", rf.getServerDetail(), index, rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.snapshot.Data))
+	DPrintf("[%v]Remove Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, LogSz:%d", rf.getServerDetail(), index, rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.log))
 }

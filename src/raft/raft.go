@@ -35,6 +35,7 @@ type Raft struct {
 	me        int32
 	dead      int32
 	name      int32
+	killChan  chan bool
 
 	lastSendTime []int64
 
@@ -129,6 +130,7 @@ func (rf *Raft) Kill() {
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
+	rf.killChan <- true
 	return z == 1
 }
 
@@ -157,6 +159,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = int32(me)
 	rf.name = rand.Int31() % 100
 	rf.startElectionTimer()
+	rf.killChan = make(chan bool)
 
 	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER
@@ -172,6 +175,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int32, peerNum)
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 	go rf.ticker()
-	go printGoroutineCnt()
+	//go rf.printGoroutineCnt()
 	return rf
 }
