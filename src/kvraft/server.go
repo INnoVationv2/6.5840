@@ -296,7 +296,7 @@ func (kv *KVServer) checkSnapshot() {
 		log.Fatalf("[%v]Encode KVServer State Failed", kv.getServerDetail())
 	}
 
-	kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
+	go kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
 }
 
 func (kv *KVServer) monitorTerm() {
