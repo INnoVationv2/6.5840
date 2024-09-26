@@ -10,7 +10,7 @@ import (
 )
 
 // Debugging
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
@@ -76,10 +76,9 @@ func getCurrentTime() int64 {
 	return time.Now().UnixMilli()
 }
 
-func (rf *Raft) printGoroutineCnt() {
-	for !rf.killed() {
-		fmt.Printf("[%v]当前协程数量:%d\n", rf.getServerDetail(), runtime.NumGoroutine())
+func printGoroutineCnt() {
+	for {
+		fmt.Printf("当前协程数量:%d\n", runtime.NumGoroutine())
 		time.Sleep(time.Second / 10)
 	}
-	fmt.Printf("[%v]Killed, Stop Print Goroutine Cnt\n", rf.getServerDetail())
 }
