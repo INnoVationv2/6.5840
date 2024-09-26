@@ -2,7 +2,6 @@ package raft
 
 import (
 	"fmt"
-	"sync/atomic"
 	"time"
 )
 
@@ -104,27 +103,23 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 
 // 发送日志到所有Server，达成一致后对日志提交
 func (rf *Raft) syncLogWithFollower() {
-	DPrintf("[%v]Start Sync Log", rf.getServerDetail())
-	majority := rf.majority
+	DPrintf("[%v]Start Sync Log, majority:%d", rf.getServerDetail(), rf.majority)
+	jobFinishChan := make(chan int)
+	go rf.monitorFinishedSendJob(jobFinishChan)
 	for idx := range rf.peers {
 		if int32(idx) == rf.me {
 			continue
 		}
 		serverNo := idx
 		go func() {
+			DPrintf("[%v]Send Entries To Follower %d", rf.getServerDetail(), serverNo)
 			var status int
 			for !rf.killed() && rf.isLeader() {
-				DPrintf("[%v]Send Entries To Follower %d", rf.getServerDetail(), serverNo)
 				status = rf.sendEntriesToFollower(serverNo, false)
 				// 如果是发送超时或者snapshot发送完成, 需要重试发送
 				switch status {
-				case ERROR:
-					return
-				case COMPLETE:
-					if atomic.AddInt32(&majority, -1) == 0 {
-						DPrintf("[%v]Update CommitIndex", rf.getServerDetail())
-						rf.updateCommitIndex()
-					}
+				case ERROR, COMPLETE:
+					jobFinishChan <- status
 					return
 				case TIMEOUT:
 					DPrintf("[%v]Send AppendEntries RPC To %d Timeout, ReSending", rf.getServerDetail(), serverNo)
@@ -132,22 +127,30 @@ func (rf *Raft) syncLogWithFollower() {
 				case SNAPSHOTCOMPLETE:
 					DPrintf("[%v]Success Send Snapshot To %d", rf.getServerDetail(), serverNo)
 				}
-				//if status == ERROR {
-				//	return
-				//} else if status == COMPLETE {
-				//	if atomic.AddInt32(&majority, -1) == 0 {
-				//		DPrintf("[%v]Update CommitIndex", rf.getServerDetail())
-				//		rf.updateCommitIndex()
-				//	}
-				//	return
-				//} else if status == TIMEOUT {
-				//	DPrintf("[%v]Send AppendEntries RPC To %d Timeout, ReSending", rf.getServerDetail(), serverNo)
-				//	time.Sleep(time.Millisecond * 100)
-				//} else if status == SNAPSHOTCOMPLETE {
-				//	DPrintf("[%v]Success Send Snapshot To %d", rf.getServerDetail(), serverNo)
-				//}
 			}
+			DPrintf("[%v]Send Entries To Follower %d Complete", rf.getServerDetail(), serverNo)
 		}()
+	}
+}
+
+func (rf *Raft) monitorFinishedSendJob(jobFinishChan chan int) {
+	majority := rf.majority
+	for {
+		select {
+		case status := <-jobFinishChan:
+			if status == ERROR {
+				return
+			}
+			majority--
+			if majority == 0 {
+				DPrintf("[%v]Update CommitIndex", rf.getServerDetail())
+				rf.updateCommitIndex()
+				return
+			}
+		case <-rf.killChan:
+			rf.killChan <- true
+			return
+		}
 	}
 }
 
@@ -193,10 +196,18 @@ func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 		}
 
 		rf.buildAppendEntriesArgs(args, serverNo, heartbeat)
-		if !heartbeat && (len(args.Entries) == 0 || args.Entries[len(args.Entries)-1].Term != rf.getCurrentTerm()) {
-			DPrintf("[%v]Stop Sync Log With %d, RPC Entries Size Is %d", rf.getServerDetail(), serverNo, len(args.Entries))
-			rf.mu.Unlock()
-			return ERROR
+		if !heartbeat {
+			if len(args.Entries) == 0 {
+				DPrintf("[%v]Stop Sync Log With %d, RPC Entries Size Is 0", rf.getServerDetail(), serverNo)
+				rf.mu.Unlock()
+				return COMPLETE
+			}
+			if args.Entries[len(args.Entries)-1].Term != rf.getCurrentTerm() {
+				DPrintf("[%v]Stop Sync Log With %d, Term Changede, Log Term:%d, Current Term:%d",
+					rf.getServerDetail(), serverNo, args.Entries[len(args.Entries)-1].Term, rf.getCurrentTerm())
+				rf.mu.Unlock()
+				return ERROR
+			}
 		}
 		rf.resetHeartbeatTimer(serverNo)
 		rf.mu.Unlock()
@@ -357,7 +368,7 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 	}
 
 	// 更新CommitIndex, Follower同样要任期相同才提交
-	newCommitIndex := min(args.LeaderCommit, lastLogIdx)
+	newCommitIndex := min(args.LeaderCommit, rf.getLastLogIndex())
 	if newCommitIndex > rf.commitIndex && args.Term == rf.getLogTermByIdx(newCommitIndex) {
 		rf.commitIndex = newCommitIndex
 		DPrintf("[%v]Update CommitIndex To %d", rf.getServerDetail(), newCommitIndex)
@@ -377,41 +388,40 @@ func (rf *Raft) sendCommitedLogToTester() {
 
 	var snapshot *Snapshot
 	var logs []LogEntry
-	var sendMode int
-	for {
-		rf.mu.Lock()
-		if rf.lastApplied >= rf.commitIndex {
-			rf.mu.Unlock()
-			return
-		}
-		if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
-			// 发送snapshot
-			sendMode = 0
-			snapshot = rf.snapshot
-			rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
-			//DPrintf("[%v]Sent Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
-		} else {
-			// 发送Log
-			sendMode = 1
-			st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
-			commitLogs := rf.log[st : ed+1]
-			logs = make([]LogEntry, len(commitLogs))
-			copy(logs, commitLogs)
-			//DPrintf("[%v]LastApplied:%d,pos%d CommitIndex:%d,pos:%d, FirstLogIdx:%d", rf.getServerDetail(), rf.lastApplied, st, rf.commitIndex, ed, rf.log[st].Index)
-			rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
-		}
-		rf.mu.Unlock()
+	rf.mu.Lock()
 
-		switch sendMode {
-		case 0:
-			rf.sendSnapshotToTester(snapshot)
-		case 1:
-			rf.sendLogToTester(logs)
+	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
+		// 发送snapshot
+		snapshot = &Snapshot{
+			LastIncludedIndex: rf.snapshot.LastIncludedIndex,
+			LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
+			Data:              make([]byte, len(rf.snapshot.Data)),
 		}
+		copy(snapshot.Data, rf.snapshot.Data)
+		rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
+		DPrintf("[%v]With Snapshot Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
 	}
+
+	if rf.lastApplied < rf.commitIndex {
+		st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
+		commitLogs := rf.log[st : ed+1]
+		logs = make([]LogEntry, len(commitLogs))
+		copy(logs, commitLogs)
+		rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
+		DPrintf("[%v]With LogEntry Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+	}
+	rf.mu.Unlock()
+
+	rf.sendSnapshotToTester(snapshot)
+	rf.sendLogToTester(logs)
 }
 
 func (rf *Raft) sendLogToTester(logs []LogEntry) {
+	DPrintf("[%v]Send Log To Tester", rf.getServerDetail())
+	if len(logs) == 0 {
+		DPrintf("[%v]Log Is Empty", rf.getServerDetail())
+		return
+	}
 	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index)
 	msg := ApplyMsg{CommandValid: true}
 	for _, log := range logs {
