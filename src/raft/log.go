@@ -375,26 +375,43 @@ func (rf *Raft) sendCommitedLogToTester() {
 	rf.applyChMutex.Lock()
 	defer rf.applyChMutex.Unlock()
 
-	rf.mu.Lock()
-	// 发送snapshot
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
-		DPrintf("[%v]Send Snapshot %v To Testerd", rf.getServerDetail(), rf.snapshot)
-		rf.sendSnapshotToTester(rf.snapshot)
-		rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
-		DPrintf("[%v]Success Send Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
-	}
-	if rf.lastApplied >= rf.commitIndex {
+	var snapshot *Snapshot
+	var logs []LogEntry
+	var sendMode int
+	for {
+		rf.mu.Lock()
+		if rf.lastApplied >= rf.commitIndex {
+			rf.mu.Unlock()
+			return
+		}
+		if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
+			// 发送snapshot
+			sendMode = 0
+			snapshot = rf.snapshot
+			rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
+			//DPrintf("[%v]Sent Snapshot To Tester, Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+		} else {
+			// 发送Log
+			sendMode = 1
+			st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
+			commitLogs := rf.log[st : ed+1]
+			logs = make([]LogEntry, len(commitLogs))
+			copy(logs, commitLogs)
+			//DPrintf("[%v]LastApplied:%d,pos%d CommitIndex:%d,pos:%d, FirstLogIdx:%d", rf.getServerDetail(), rf.lastApplied, st, rf.commitIndex, ed, rf.log[st].Index)
+			rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
+		}
 		rf.mu.Unlock()
-		return
-	}
-	st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
-	commitLogs := rf.log[st : ed+1]
-	logs := make([]LogEntry, len(commitLogs))
-	copy(logs, commitLogs)
-	DPrintf("[%v]LastApplied:%d,pos%d CommitIndex:%d,pos:%d, FirstLogIdx:%d", rf.getServerDetail(), rf.lastApplied, st, rf.commitIndex, ed, rf.log[st].Index)
-	rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
-	rf.mu.Unlock()
 
+		switch sendMode {
+		case 0:
+			rf.sendSnapshotToTester(snapshot)
+		case 1:
+			rf.sendLogToTester(logs)
+		}
+	}
+}
+
+func (rf *Raft) sendLogToTester(logs []LogEntry) {
 	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index)
 	msg := ApplyMsg{CommandValid: true}
 	for _, log := range logs {
@@ -402,7 +419,7 @@ func (rf *Raft) sendCommitedLogToTester() {
 		msg.CommandIndex, msg.Command = int(log.Index), log.Command
 		rf.applyCh <- msg
 	}
-	DPrintf("[%v]Success Send %d~%d Log To Tester, Sz:%d, Update LastApplied To %d", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index, len(logs), rf.lastApplied)
+	DPrintf("[%v]Success Send %d~%d Log To Tester", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index)
 }
 
 func (rf *Raft) sendHeartbeat() {
@@ -410,7 +427,6 @@ func (rf *Raft) sendHeartbeat() {
 	gap := time.Duration(100) * time.Millisecond
 	// 每隔100ms检查，给100ms内没有发送数据的Follower发送心跳
 	for !rf.killed() && rf.isLeader() {
-		DPrintf("[%v]Sending Heartbeat", rf.getServerDetail())
 		for idx := range rf.peers {
 			if idx == int(rf.me) {
 				continue
