@@ -67,3 +67,15 @@ func (rf *Raft) getLogTermByIdx(idx int32) int32 {
 	}
 	return rf.log[pos].Term
 }
+
+func (rf *Raft) getCurrentTerm() int32 {
+	return atomic.LoadInt32(&rf.currentTerm)
+}
+
+func (rf *Raft) incCurrentTerm() int32 {
+	return atomic.AddInt32(&rf.currentTerm, 1)
+}
+
+func (rf *Raft) setCurrentTerm(newTerm int32) {
+	atomic.StoreInt32(&rf.currentTerm, newTerm)
+}

@@ -62,17 +62,21 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return int(rf.currentTerm), rf.getRole() == LEADER
+	return int(rf.getCurrentTerm()), rf.getRole() == LEADER
 }
 
 func (rf *Raft) isLeader() bool {
 	return rf.getRole() == LEADER
 }
 
+func (rf *Raft) checkRaftStatus(term int32) bool {
+	return rf.killed() || !rf.isLeader() || rf.getCurrentTerm() != term
+}
+
 func (rf *Raft) persist() {
 	buf := new(bytes.Buffer)
 	e := labgob.NewEncoder(buf)
-	if e.Encode(rf.currentTerm) != nil ||
+	if e.Encode(rf.getCurrentTerm()) != nil ||
 		e.Encode(rf.votedFor) != nil ||
 		e.Encode(rf.log) != nil ||
 		e.Encode(rf.role) != nil {
@@ -130,7 +134,7 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) turnToFollower(term int32, votedFor int32) {
 	rf.setRole(FOLLOWER)
-	rf.currentTerm = term
+	rf.setCurrentTerm(term)
 	rf.votedFor = votedFor
 }
 
@@ -168,5 +172,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int32, peerNum)
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 	go rf.ticker()
+	go rf.printGoroutineCnt()
 	return rf
 }
