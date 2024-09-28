@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	GET    = "GET"
-	PUT    = "PUT"
-	APPEND = "APPEND"
+	GET = iota
+	PUT
+	APPEND
 )
 
 type Command struct {
 	ClientId int64
-	Type     string
+	Type     int
 	Key      string
 	Value    string
 	Status   Err
@@ -30,7 +30,7 @@ func (cmd *Command) String() string {
 	return fmt.Sprintf("{%v %v:%v}", cmd.Type, cmd.Key, cmd.Value)
 }
 
-func buildCommand(opType string, clientId int64, str ...string) *Command {
+func buildCommand(opType int, clientId int64, str ...string) *Command {
 	cmd := Command{Type: opType, Key: str[0], Status: OK, ClientId: clientId}
 	if opType == PUT || opType == APPEND {
 		cmd.Value = str[1]
@@ -124,7 +124,7 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.PutAppend(args, reply, APPEND)
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply, op string) {
+func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply, op int) {
 	clientId, cmdId := args.ClientId, args.CommandId
 
 	// Check If Already Execute

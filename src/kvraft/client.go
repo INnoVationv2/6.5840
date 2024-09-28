@@ -55,24 +55,18 @@ func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
 	for {
 		DPrintf("[Client]Send %s RPC %v To KvServer %d", op, args, serverNo)
 		ok := ck.servers[serverNo].Call("KVServer."+op, args, reply)
-		if !ok || reply.getErr() == Killed || reply.getErr() == ErrWrongLeader {
-			DPrintf("[Client]Send %s RPC %v To KvServer %d Failed:%v, Retring...", op, args, serverNo, reply.getErr())
-			serverNo = (serverNo + 1) % int32(len(ck.servers))
-			if serverNo == leaderId {
-				DPrintf("[Client]No Leader, Wait Some Time Then Retry...")
-				// 试了一圈都没有Leader，说明当前没有Leader，等一会儿再试
-				time.Sleep(time.Millisecond * 400)
-			}
-			continue
-		} else if reply.getErr() == LogNotMatch || reply.getErr() == TermChanged {
-			DPrintf("[Client]Send %s RPC %v To KvServer %d failed:%v, Retring...", op, args, serverNo, reply.getErr())
-			continue
+		if ok && reply.getErr() == OK {
+			go ck.Report(serverNo, args)
+			atomic.StoreInt32(&ck.leaderId, serverNo)
+			DPrintf("[Client]Update LeaderId to %d", serverNo)
+			return
 		}
-		break
+		DPrintf("[Client]Send %s RPC %v To KvServer %d Failed:%v, Retring...", op, args, serverNo, reply.getErr())
+		serverNo = (serverNo + 1) % int32(len(ck.servers))
+		if serverNo == leaderId {
+			time.Sleep(time.Millisecond * 400)
+		}
 	}
-	go ck.Report(serverNo, args)
-	atomic.StoreInt32(&ck.leaderId, serverNo)
-	DPrintf("[Client]Update LeaderId to %d", serverNo)
 }
 
 func (ck *Clerk) Report(serverNo int32, arg Args) {
