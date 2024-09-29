@@ -1,17 +1,22 @@
 package shardctrler
 
-//
-// Shardctrler clerk.
-//
-
-import "6.5840/labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"6.5840/labrpc"
+	"crypto/rand"
+	"math/big"
+	"sync/atomic"
+	"time"
+)
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// Your data here.
+	id         int64
+	commandCnt int32
+	servers    []*labrpc.ClientEnd
+	leaderId   int32
+}
+
+func (ck *Clerk) getCmdId() int32 {
+	return atomic.AddInt32(&ck.commandCnt, 1)
 }
 
 func nrand() int64 {
@@ -23,79 +28,85 @@ func nrand() int64 {
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
+	ck.id = nrand()
 	ck.servers = servers
-	// Your code here.
 	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
-	args := &QueryArgs{}
-	// Your code here.
-	args.Num = num
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply QueryReply
-			ok := srv.Call("ShardCtrler.Query", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return reply.Config
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+	args := &QueryArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCmdId(),
+		Num:       num,
 	}
+	reply := &QueryReply{}
+	ck.CallServer("Query", args, reply)
+	DPrintf("[Client]Query RPC Complete %v:%v", args, reply)
+	return reply.Config
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
-	args := &JoinArgs{}
-	// Your code here.
-	args.Servers = servers
-
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply JoinReply
-			ok := srv.Call("ShardCtrler.Join", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+	args := &JoinArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCmdId(),
+		Servers:   make(map[int][]string),
 	}
+	for key, val := range servers {
+		args.Servers[key] = make([]string, len(val))
+		copy(args.Servers[key], val)
+	}
+	reply := &JoinReply{}
+	ck.CallServer("Join", args, reply)
+	DPrintf("[Client]Join RPC Complete %v", args)
 }
 
 func (ck *Clerk) Leave(gids []int) {
-	args := &LeaveArgs{}
-	// Your code here.
-	args.GIDs = gids
-
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply LeaveReply
-			ok := srv.Call("ShardCtrler.Leave", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+	args := &LeaveArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCmdId(),
+		GIDs:      gids,
 	}
+	reply := &LeaveReply{}
+	ck.CallServer("Leave", args, reply)
+	DPrintf("[Client]Leave RPC Complete %v", args)
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
-	args := &MoveArgs{}
-	// Your code here.
-	args.Shard = shard
-	args.GID = gid
+	args := &MoveArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCmdId(),
+		Shard:     shard,
+		GID:       gid,
+	}
+	reply := &MoveReply{}
+	ck.CallServer("Move", args, reply)
+	DPrintf("[Client]Move RPC Complete %v", args)
+}
 
+func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
+	leaderId := ck.leaderId
+	serverNo := leaderId
 	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply MoveReply
-			ok := srv.Call("ShardCtrler.Move", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return
-			}
+		DPrintf("[Client]Send %s RPC %v To ShardCtrler %d", op, args, serverNo)
+		ok := ck.servers[serverNo].Call("ShardCtrler."+op, args, reply)
+		if ok && reply.getErr() == OK {
+			go ck.Report(serverNo, args)
+			atomic.StoreInt32(&ck.leaderId, serverNo)
+			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		serverNo = (serverNo + 1) % int32(len(ck.servers))
+		// 试了一圈，没有Leader，休息一段时间再试
+		if serverNo == leaderId {
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+}
+
+func (ck *Clerk) Report(serverNo int32, arg Args) {
+	cmdId := arg.GetCommandId()
+	args, reply := QueryArgs{ClientId: ck.id, CommandId: cmdId}, QueryReply{}
+	DPrintf("[Client]Command %d Is Complete, Send Report RPC To ShardCtrler %d", cmdId, serverNo)
+	for ok := false; !ok; {
+		ok = ck.servers[serverNo].Call("ShardCtrler.Report", &args, &reply)
 	}
 }
