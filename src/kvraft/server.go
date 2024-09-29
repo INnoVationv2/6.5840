@@ -300,7 +300,7 @@ func (kv *KVServer) checkSnapshot() {
 }
 
 func (kv *KVServer) monitorTerm() {
-	for {
+	for !kv.killed() {
 		term, _ := kv.rf.GetState()
 		if int32(term) != kv.getRaftTerm() {
 			DPrintf("[%s]Raft Term Change:%d-->%d", kv.getServerDetail(), kv.getRaftTerm(), term)
