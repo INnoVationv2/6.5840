@@ -104,7 +104,7 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 // 发送日志到所有Server，达成一致后对日志提交
 func (rf *Raft) syncLogWithFollower() {
 	DPrintf("[%v]Start Sync Log, majority:%d", rf.getServerDetail(), rf.majority)
-	jobFinishChan := make(chan int)
+	jobFinishChan := make(chan int, len(rf.peers))
 	go rf.monitorFinishedSendJob(jobFinishChan)
 	for idx := range rf.peers {
 		if int32(idx) == rf.me {

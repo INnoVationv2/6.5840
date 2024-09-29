@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -182,6 +183,17 @@ func (sc *ShardCtrler) ticker() {
 			DPrintf("[%s]Sever Been Killed, Ticker End", sc.getServerDetail())
 			return
 		}
+	}
+}
+
+func (sc *ShardCtrler) monitorTerm() {
+	for !sc.killed() {
+		term, _ := sc.rf.GetState()
+		if int32(term) != sc.getRaftTerm() {
+			DPrintf("[%s]Raft Term Change:%d-->%d", sc.getServerDetail(), sc.getRaftTerm(), term)
+			sc.setRaftTerm(int32(term))
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -370,9 +382,9 @@ func (sc *ShardCtrler) Report(args *QueryArgs, reply *QueryReply) {
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
 func (sc *ShardCtrler) Kill() {
-	sc.killCh <- true
 	atomic.StoreInt32(&sc.dead, 1)
 	sc.rf.Kill()
+	sc.killCh <- true
 }
 
 func (sc *ShardCtrler) killed() bool {
@@ -403,5 +415,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.submitCmd = make(map[int]*Command)
 
 	go sc.ticker()
+	go sc.monitorTerm()
+
 	return sc
 }
