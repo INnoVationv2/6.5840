@@ -285,7 +285,6 @@ func (sc *ShardCtrler) applyJoinCmd(args *JoinArgs) {
 	for idx, newGidIdx := 0, 0; idx < NShards; idx++ {
 		oldGid := oldConf.Shards[idx]
 		gidCnt[oldGid]++
-		DPrintf("Time:%d Gid:%d Cnt:%d", times, oldGid, gidCnt[oldGid])
 		if gidCnt[oldGid] > times || newConf.Shards[idx] == 0 {
 			newConf.Shards[idx] = newGidList[newGidIdx]
 			newGidIdx = (newGidIdx + 1) % len(newGidList)

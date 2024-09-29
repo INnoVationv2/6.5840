@@ -8,11 +8,14 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
-import "6.5840/shardctrler"
-import "time"
+import (
+	"6.5840/labrpc"
+	"6.5840/shardctrler"
+	"crypto/rand"
+	"math/big"
+	"sync/atomic"
+	"time"
+)
 
 // which shard is a key in?
 // please use this function,
@@ -34,10 +37,17 @@ func nrand() int64 {
 }
 
 type Clerk struct {
+	id         int64
+	commandCnt int32
+
 	sm       *shardctrler.Clerk
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+}
+
+func (ck *Clerk) getCmdId() int32 {
+	return atomic.AddInt32(&ck.commandCnt, 1)
 }
 
 // the tester calls MakeClerk.
@@ -51,6 +61,7 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
+	ck.id = nrand()
 	// You'll have to add code here.
 	return ck
 }
@@ -60,8 +71,11 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	args := GetArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCmdId(),
+		Key:       key,
+	}
 
 	for {
 		shard := key2shard(key)
@@ -90,10 +104,13 @@ func (ck *Clerk) Get(key string) string {
 // shared by Put and Append.
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
+	args := PutAppendArgs{
+		ClientId:  ck.id,
+		CommandId: ck.getCmdId(),
+		Key:       key,
+		Value:     value,
+		Op:        op,
+	}
 
 	for {
 		shard := key2shard(key)
