@@ -14,19 +14,22 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+
+	Killed      = "Killed"
+	LogNotMatch = "LogNotMatch"
+	TermChanged = "TermChanged"
 )
 
 type Err string
 
 // Put or Append
 type PutAppendArgs struct {
-	// You'll have to add definitions here.
+	ClientId  int64
+	CommandId int32
+
 	Key   string
 	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Op    string
 }
 
 type PutAppendReply struct {
@@ -34,8 +37,10 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
+	ClientId  int64
+	CommandId int32
+
 	Key string
-	// You'll have to add definitions here.
 }
 
 type GetReply struct {
