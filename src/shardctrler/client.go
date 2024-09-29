@@ -40,7 +40,7 @@ func (ck *Clerk) Query(num int) Config {
 		Num:       num,
 	}
 	reply := &QueryReply{}
-	ck.CallServer("Query", args, reply)
+	ck.callServer("Query", args, reply)
 	DPrintf("[Client]Query RPC Complete %v:%v", args, reply)
 	return reply.Config
 }
@@ -56,7 +56,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 		copy(args.Servers[key], val)
 	}
 	reply := &JoinReply{}
-	ck.CallServer("Join", args, reply)
+	ck.callServer("Join", args, reply)
 	DPrintf("[Client]Join RPC Complete %v", args)
 }
 
@@ -67,7 +67,7 @@ func (ck *Clerk) Leave(gids []int) {
 		GIDs:      gids,
 	}
 	reply := &LeaveReply{}
-	ck.CallServer("Leave", args, reply)
+	ck.callServer("Leave", args, reply)
 	DPrintf("[Client]Leave RPC Complete %v", args)
 }
 
@@ -79,11 +79,11 @@ func (ck *Clerk) Move(shard int, gid int) {
 		GID:       gid,
 	}
 	reply := &MoveReply{}
-	ck.CallServer("Move", args, reply)
+	ck.callServer("Move", args, reply)
 	DPrintf("[Client]Move RPC Complete %v", args)
 }
 
-func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
+func (ck *Clerk) callServer(op string, args Args, reply Reply) {
 	leaderId := ck.leaderId
 	serverNo := leaderId
 	for {

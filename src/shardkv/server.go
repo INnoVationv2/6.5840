@@ -4,6 +4,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"6.5840/shardctrler"
 	"bytes"
 	"fmt"
 	"log"
@@ -47,8 +48,11 @@ type ShardKV struct {
 	applyCh      chan raft.ApplyMsg
 	make_end     func(string) *labrpc.ClientEnd
 	gid          int
-	ctrlers      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
+
+	ctrlers          []*labrpc.ClientEnd
+	shardCtrlerClerk *shardctrler.Clerk
+	shardConf        shardctrler.Config
 
 	raftPersister *raft.Persister
 
@@ -77,12 +81,30 @@ func (kv *ShardKV) checkIfCommandAlreadyExecuted(clientId int64, commandId int32
 	return false
 }
 
+func (kv *ShardKV) updateShardConf() {
+	kv.shardConf = kv.shardCtrlerClerk.Query(-1)
+}
+
+func (kv *ShardKV) checkShard(key string) bool {
+	kv.updateShardConf()
+	shard := key2shard(key)
+	if kv.shardConf.Shards[shard] == kv.gid {
+		return true
+	}
+	return false
+}
+
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	DPrintf("[%v]Received Get RPC:%v", kv.getServerDetail(), args)
 	clientId, cmdId := args.ClientId, args.CommandId
 
 	// 如果是重复命令，直接返回之前的结果
 	kv.mu.Lock()
+	if !kv.checkShard(args.Key) {
+		reply.Err = ErrWrongGroup
+		kv.mu.Unlock()
+		return
+	}
 	if kv.checkIfCommandAlreadyExecuted(clientId, cmdId) {
 		DPrintf("[%s]Dupliacte Get Reuqest %v", kv.getServerDetail(), args)
 		reply.Err = OK
@@ -105,10 +127,13 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	DPrintf("[%v]Received %s RPC:%v", kv.getServerDetail(), args.Op, args)
-
 	clientId, cmdId := args.ClientId, args.CommandId
-
 	kv.mu.Lock()
+	if !kv.checkShard(args.Key) {
+		reply.Err = ErrWrongGroup
+		kv.mu.Unlock()
+		return
+	}
 	if kv.checkIfCommandAlreadyExecuted(clientId, cmdId) {
 		DPrintf("[%s]Dupliacte %s Reuqest %v", kv.getServerDetail(), args.Op, args)
 		reply.Err = OK
@@ -346,6 +371,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.make_end = make_end
 	kv.gid = gid
 	kv.ctrlers = ctrlers
+	kv.shardCtrlerClerk = shardctrler.MakeClerk(ctrlers)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
