@@ -170,9 +170,6 @@ func (rf *Raft) updateCommitIndex() {
 		DPrintf("[%v]Update CommitIndex To %d", rf.getServerDetail(), N)
 	}
 
-	if rf.commitIndex > rf.lastApplied {
-		go rf.sendCommitedLogToTester()
-	}
 	DPrintf("[%v]Update Commit Index Complete", rf.getServerDetail())
 }
 
@@ -373,46 +370,45 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		DPrintf("[%v]Update CommitIndex To %d", rf.getServerDetail(), newCommitIndex)
 	}
 
-	if rf.commitIndex > rf.lastApplied {
-		go rf.sendCommitedLogToTester()
-	}
-
 	reply.Success = true
 	DPrintf("[%v]AppendEntries Success\n", rf.getServerDetail())
 }
 
 func (rf *Raft) sendCommitedLogToTester() {
-	rf.applyChMutex.Lock()
-	defer rf.applyChMutex.Unlock()
-
-	var snapshot *Snapshot
-	var logs []LogEntry
-	rf.mu.Lock()
-
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
-		// 发送snapshot
-		snapshot = &Snapshot{
-			LastIncludedIndex: rf.snapshot.LastIncludedIndex,
-			LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
-			Data:              make([]byte, len(rf.snapshot.Data)),
+	for !rf.killed() {
+		var snapshot *Snapshot
+		var logs []LogEntry
+		rf.mu.Lock()
+		if rf.lastApplied >= rf.commitIndex {
+			rf.mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
-		copy(snapshot.Data, rf.snapshot.Data)
-		rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
-		DPrintf("[%v]With Snapshot Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
-	}
+		if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > rf.lastApplied {
+			// 发送snapshot
+			snapshot = &Snapshot{
+				LastIncludedIndex: rf.snapshot.LastIncludedIndex,
+				LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
+				Data:              make([]byte, len(rf.snapshot.Data)),
+			}
+			copy(snapshot.Data, rf.snapshot.Data)
+			rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
+			DPrintf("[%v]With Snapshot Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+		}
 
-	if rf.lastApplied < rf.commitIndex {
-		st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
-		commitLogs := rf.log[st : ed+1]
-		logs = make([]LogEntry, len(commitLogs))
-		copy(logs, commitLogs)
-		rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
-		DPrintf("[%v]With LogEntry Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
-	}
-	rf.mu.Unlock()
+		if rf.lastApplied < rf.commitIndex {
+			st, ed := rf.getLogPosByIdx(rf.lastApplied+1), rf.getLogPosByIdx(rf.commitIndex)
+			commitLogs := rf.log[st : ed+1]
+			logs = make([]LogEntry, len(commitLogs))
+			copy(logs, commitLogs)
+			rf.lastApplied = max(rf.lastApplied, logs[len(logs)-1].Index)
+			DPrintf("[%v]With LogEntry Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
+		}
+		rf.mu.Unlock()
 
-	rf.sendSnapshotToTester(snapshot)
-	rf.sendLogToTester(logs)
+		rf.sendSnapshotToTester(snapshot)
+		rf.sendLogToTester(logs)
+	}
 }
 
 func (rf *Raft) sendLogToTester(logs []LogEntry) {

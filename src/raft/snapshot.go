@@ -109,8 +109,8 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 		}
 	}
 	rf.log = rf.log[idx+1:]
+	rf.commitIndex = max(rf.commitIndex, rf.snapshot.LastIncludedIndex)
 	rf.persist()
-	go rf.sendCommitedLogToTester()
 	DPrintf("[%v]Success Build Snapshot:%v", rf.getServerDetail(), rf.snapshot)
 	DPrintf("[%v]After Build Snapshot, LastLogIdx:%d Log Length:%d", rf.getServerDetail(), rf.getLastLogIndex(), len(rf.log))
 }
