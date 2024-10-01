@@ -113,21 +113,8 @@ func (rf *Raft) syncLogWithFollower() {
 		serverNo := idx
 		go func() {
 			DPrintf("[%v]Send Entries To Follower %d", rf.getServerDetail(), serverNo)
-			var status int
-			for !rf.killed() && rf.isLeader() {
-				status = rf.sendEntriesToFollower(serverNo, false)
-				// 如果是发送超时或者snapshot发送完成, 需要重试发送
-				switch status {
-				case ERROR, COMPLETE:
-					jobFinishChan <- status
-					return
-				case TIMEOUT:
-					DPrintf("[%v]Send AppendEntries RPC To %d Timeout, ReSending", rf.getServerDetail(), serverNo)
-					time.Sleep(time.Millisecond * 100)
-				case SNAPSHOTCOMPLETE:
-					DPrintf("[%v]Success Send Snapshot To %d", rf.getServerDetail(), serverNo)
-				}
-			}
+			status := rf.sendEntriesToFollower(serverNo, false)
+			jobFinishChan <- status
 			DPrintf("[%v]Send Entries To Follower %d Complete", rf.getServerDetail(), serverNo)
 		}()
 	}
@@ -176,19 +163,17 @@ func (rf *Raft) updateCommitIndex() {
 func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 	args := &AppendEntriesArgs{}
 	reply := &AppendEntriesReply{}
-	for !rf.killed() {
+	for !rf.killed() && rf.isLeader() {
 		rf.mu.Lock()
 		DPrintf("[%v]Sync Log With Follower %d", rf.getServerDetail(), serverNo)
-		if !rf.isLeader() {
-			DPrintf("[%v]Not Leader, Stop Sync Log With Follower %d", rf.getServerDetail(), serverNo)
-			rf.mu.Unlock()
-			return ERROR
-		}
-
 		if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= rf.nextIndex[serverNo] {
 			installSnapshot := rf.buildInstallSnapshot()
 			rf.mu.Unlock()
-			return rf.sendSnapshotToFollower(serverNo, installSnapshot)
+			status := rf.sendSnapshotToFollower(serverNo, installSnapshot)
+			if status == ERROR {
+				return ERROR
+			}
+			continue
 		}
 
 		rf.buildAppendEntriesArgs(args, serverNo, heartbeat)
@@ -215,7 +200,8 @@ func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 				return ERROR
 			}
 			DPrintf("[%v]Send AppendEntries RPC To %d Timeout", rf.getServerDetail(), serverNo)
-			return TIMEOUT
+			time.Sleep(time.Millisecond * 100)
+			continue
 		}
 
 		rf.mu.Lock()
