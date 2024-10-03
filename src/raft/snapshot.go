@@ -116,9 +116,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 }
 
 func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
-	DPrintf("[%v]Send Snapshot To Tester", rf.getServerDetail())
 	if snapshot == nil {
-		DPrintf("[%v]Snapshot Is Nil", rf.getServerDetail())
 		return
 	}
 	DPrintf("[%v]Send Snapshot %v To Tester", rf.getServerDetail(), snapshot)

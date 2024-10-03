@@ -60,9 +60,17 @@ func (rf *Raft) getLogPosByIdx(idx int32) int32 {
 	return idx
 }
 
+func (rf *Raft) getLogIndexByIdx(idx int32) int32 {
+	pos := rf.getLogPosByIdx(idx)
+	if pos < 0 {
+		return rf.snapshot.LastIncludedIndex
+	}
+	return rf.log[pos].Index
+}
+
 func (rf *Raft) getLogTermByIdx(idx int32) int32 {
 	pos := rf.getLogPosByIdx(idx)
-	if pos < 0 || len(rf.log) == 0 {
+	if pos < 0 {
 		return rf.snapshot.LastIncludedTerm
 	}
 	return rf.log[pos].Term

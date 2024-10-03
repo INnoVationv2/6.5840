@@ -71,11 +71,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) ticker() {
 	// For Crash Recover Use
 	if rf.role == LEADER {
-		go rf.sendHeartbeat()
+		rf.turnToLeader()
 	}
 	DPrintf("[%s]Join To Cluster", rf.getServerDetail())
-	for !rf.killed() {
+	for {
 		time.Sleep(getRandomTimeoutMs())
+		if rf.killed() {
+			break
+		}
 		if rf.isLeader() {
 			continue
 		}
@@ -145,7 +148,6 @@ func (rf *Raft) requestVote(serverNo int, args *RequestVoteArgs, voteCount *int3
 		DPrintf("[%v]Get Majority Vote, Become Leader", rf.getServerDetail())
 		rf.turnToLeader()
 		rf.persist()
-		go rf.sendHeartbeat()
 		return
 	}
 }

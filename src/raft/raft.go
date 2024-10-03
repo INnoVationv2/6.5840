@@ -145,9 +145,10 @@ func (rf *Raft) turnToLeader() {
 	rf.setRole(LEADER)
 	rf.votedFor = rf.me
 	for idx := range rf.peers {
-		rf.nextIndex[idx] = int32(len(rf.log))
+		rf.nextIndex[idx] = rf.getLastLogIndex() + 1
 		rf.matchIndex[idx] = 0
 	}
+	go rf.sendHeartbeat()
 }
 
 func Make(peers []*labrpc.ClientEnd, me int,

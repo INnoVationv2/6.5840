@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -104,8 +105,7 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 // 发送日志到所有Server，达成一致后对日志提交
 func (rf *Raft) syncLogWithFollower() {
 	DPrintf("[%v]Start Sync Log, majority:%d", rf.getServerDetail(), rf.majority)
-	jobFinishChan := make(chan int, len(rf.peers))
-	go rf.monitorFinishedSendJob(jobFinishChan)
+	majority := rf.majority
 	for idx := range rf.peers {
 		if int32(idx) == rf.me {
 			continue
@@ -114,29 +114,11 @@ func (rf *Raft) syncLogWithFollower() {
 		go func() {
 			DPrintf("[%v]Send Entries To Follower %d", rf.getServerDetail(), serverNo)
 			status := rf.sendEntriesToFollower(serverNo, false)
-			jobFinishChan <- status
+			if status == COMPLETE && atomic.AddInt32(&majority, -1) == 0 {
+				rf.updateCommitIndex()
+			}
 			DPrintf("[%v]Send Entries To Follower %d Complete", rf.getServerDetail(), serverNo)
 		}()
-	}
-}
-
-func (rf *Raft) monitorFinishedSendJob(jobFinishChan chan int) {
-	majority := rf.majority
-	for {
-		select {
-		case status := <-jobFinishChan:
-			if status == ERROR {
-				return
-			}
-			majority--
-			if majority == 0 {
-				DPrintf("[%v]Update CommitIndex", rf.getServerDetail())
-				rf.updateCommitIndex()
-				return
-			}
-		case <-rf.killChan:
-			return
-		}
 	}
 }
 
@@ -163,8 +145,12 @@ func (rf *Raft) updateCommitIndex() {
 func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 	args := &AppendEntriesArgs{}
 	reply := &AppendEntriesReply{}
-	for !rf.killed() && rf.isLeader() {
+	for {
 		rf.mu.Lock()
+		if rf.killed() || !rf.isLeader() {
+			rf.mu.Unlock()
+			return ERROR
+		}
 		DPrintf("[%v]Sync Log With Follower %d", rf.getServerDetail(), serverNo)
 		if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= rf.nextIndex[serverNo] {
 			installSnapshot := rf.buildInstallSnapshot()
@@ -177,18 +163,10 @@ func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 		}
 
 		rf.buildAppendEntriesArgs(args, serverNo, heartbeat)
-		if !heartbeat {
-			if len(args.Entries) == 0 {
-				DPrintf("[%v]Stop Sync Log With %d, RPC Entries Size Is 0", rf.getServerDetail(), serverNo)
-				rf.mu.Unlock()
-				return COMPLETE
-			}
-			if args.Entries[len(args.Entries)-1].Term != rf.getCurrentTerm() {
-				DPrintf("[%v]Stop Sync Log With %d, Term Changede, Log Term:%d, Current Term:%d",
-					rf.getServerDetail(), serverNo, args.Entries[len(args.Entries)-1].Term, rf.getCurrentTerm())
-				rf.mu.Unlock()
-				return ERROR
-			}
+		if !heartbeat && len(args.Entries) == 0 {
+			DPrintf("[%v]Stop Sync Log With %d, RPC Entries Size Is 0", rf.getServerDetail(), serverNo)
+			rf.mu.Unlock()
+			return COMPLETE
 		}
 		rf.resetHeartbeatTimer(serverNo)
 		rf.mu.Unlock()
@@ -250,7 +228,6 @@ func (rf *Raft) sendEntriesToFollower(serverNo int, heartbeat bool) int {
 			rf.getServerDetail(), serverNo, rf.nextIndex[serverNo])
 		rf.mu.Unlock()
 	}
-	return ERROR
 }
 
 // For Follower
@@ -269,48 +246,41 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 	// 重置选举超时器
 	rf.closeElectionTimer()
 
-	if args.Term > term {
-		rf.setCurrentTerm(args.Term)
-		reply.Term = args.Term
-		if rf.getRole() != FOLLOWER {
-			rf.setRole(FOLLOWER)
-			rf.votedFor = args.LeaderId
-		}
+	if args.Term > term || rf.getRole() == CANDIDATE {
+		rf.turnToFollower(args.Term, args.LeaderId)
 		rf.persist()
-	}
-
-	// args.Term == term
-	if rf.getRole() == CANDIDATE {
-		rf.setRole(FOLLOWER)
-		rf.votedFor = args.LeaderId
-		rf.persist()
+		reply.Term = rf.getCurrentTerm()
 	}
 
 	// 处理snapshot.LastLogIndex大于prevLogIndex的情况
 	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex > args.PrevLogIndex {
-		if len(args.Entries) != 0 {
-			idx := 0
-			for idx < len(args.Entries) && args.Entries[idx].Index <= rf.snapshot.LastIncludedIndex {
-				idx++
+		for idx := 0; idx < len(args.Entries); idx++ {
+			// 找到第一个大于等于rf.snapshot.LastIncludedIndex的日志项
+			if args.Entries[idx].Index >= rf.snapshot.LastIncludedIndex {
+				args.PrevLogIndex = args.Entries[idx].Index
+				args.PrevLogTerm = args.Entries[idx].Term
+				args.Entries = args.Entries[idx+1:]
+				break
 			}
-			args.Entries = args.Entries[idx:]
 		}
-		args.PrevLogIndex = rf.snapshot.LastIncludedIndex
-		args.PrevLogTerm = rf.snapshot.LastIncludedTerm
+		if len(args.Entries) == 0 {
+			args.PrevLogIndex = rf.snapshot.LastIncludedIndex
+			args.PrevLogTerm = rf.snapshot.LastIncludedTerm
+		}
 	}
 
-	// 没有与prevLogIndex、prevLogTerm匹配的项
-	// 返回false
+	// 没有与prevLogIndex、prevLogTerm匹配的项, 返回false
 	lastLogIdx := rf.getLastLogIndex()
-	pos := rf.getLogPosByIdx(args.PrevLogIndex)
-	DPrintf("[%v]PrevLogIndex:%d, pos:%d, LastLogIdx:%d", rf.getServerDetail(), args.PrevLogIndex, pos, lastLogIdx)
-	if args.PrevLogIndex > lastLogIdx || rf.getLogTermByIdx(args.PrevLogIndex) != args.PrevLogTerm {
+	DPrintf("[%v]PrevLogIndex:%d, LastLogIdx:%d, logLen:%d", rf.getServerDetail(), args.PrevLogIndex, lastLogIdx, len(rf.log))
+	if args.PrevLogIndex > lastLogIdx ||
+		rf.getLogIndexByIdx(args.PrevLogIndex) != args.PrevLogIndex ||
+		rf.getLogTermByIdx(args.PrevLogIndex) != args.PrevLogTerm {
 		log := fmt.Sprintf("logSz:%d", lastLogIdx+1)
 		reply.XTerm = -1
 		reply.XIndex = -1
 		reply.XLen = rf.getLogSz()
 
-		// 返回属于冲突Term的第一个条目的index
+		// 返回属于冲突Term的第一个日志项的Index
 		if len(rf.log) > 0 && args.PrevLogIndex <= lastLogIdx {
 			idx := max(rf.getLogPosByIdx(args.PrevLogIndex), 0)
 			reply.XTerm = rf.log[idx].Term
@@ -325,16 +295,10 @@ func (rf *Raft) AcceptAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 
 	if len(args.Entries) != 0 {
 		i, j := rf.getLogPosByIdx(args.PrevLogIndex)+1, 0
-		if i < 0 {
-			i = 0
-			for j < len(args.Entries) && args.Entries[j].Index <= rf.snapshot.LastIncludedIndex {
-				j++
-			}
-		}
 		for i < int32(len(rf.log)) && j < len(args.Entries) {
-			entry1, entry2 := rf.log[i], args.Entries[j]
-			if entry1.Term != entry2.Term {
-				// 日志发生冲突, 截断, 去掉rf.log[:i]
+			e1, e2 := rf.log[i], args.Entries[j]
+			if e1.Index != e2.Index || e1.Term != e2.Term {
+				// 日志在i处发生冲突, 截断,只保留rf[0~i)
 				rf.log = rf.log[:i]
 				break
 			}
@@ -378,7 +342,7 @@ func (rf *Raft) sendCommitedLogToTester() {
 				Data:              make([]byte, len(rf.snapshot.Data)),
 			}
 			copy(snapshot.Data, rf.snapshot.Data)
-			rf.lastApplied = max(rf.lastApplied, rf.snapshot.LastIncludedIndex)
+			rf.lastApplied = max(rf.lastApplied, snapshot.LastIncludedIndex)
 			DPrintf("[%v]With Snapshot Update LastApplied To %d", rf.getServerDetail(), rf.lastApplied)
 		}
 
@@ -398,9 +362,7 @@ func (rf *Raft) sendCommitedLogToTester() {
 }
 
 func (rf *Raft) sendLogToTester(logs []LogEntry) {
-	DPrintf("[%v]Send Log To Tester", rf.getServerDetail())
 	if len(logs) == 0 {
-		DPrintf("[%v]Log Is Empty", rf.getServerDetail())
 		return
 	}
 	DPrintf("[%v]Send [%d~%d] Log To Tester", rf.getServerDetail(), logs[0].Index, logs[len(logs)-1].Index)
