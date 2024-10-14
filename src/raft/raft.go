@@ -28,42 +28,196 @@ const (
 	FOLLOWER
 )
 
+const ELECTION_TIMEOUT = 350 //350ms
+
 type Raft struct {
-	mu        sync.Mutex
-	peers     []*labrpc.ClientEnd
-	persister *Persister
-	me        int32
-	dead      int32
-	name      int32
-	killChan  chan bool
+	// Raft Basic
+	peers       []*labrpc.ClientEnd
+	persister   *Persister
+	me          int32
+	dead        int32
+	shutdownCh  chan struct{}
+	name        int32
+	majority    int32
+	rpcCh       chan *RPC
+	lastContact int64
 
-	lastSendTime []int64
-
-	majority     int32
-	applyCh      chan ApplyMsg
-	applyChMutex sync.Mutex
-
-	role      int32
-	heartbeat int32
-
+	// Raft Election
+	role        int32
 	currentTerm int32
 	votedFor    int32
+
+	// Log & Snapshot
 	log         []LogEntry
-
-	commitIndex int32
+	snapshot    *Snapshot
+	logMu       sync.RWMutex
+	applyCh     chan ApplyMsg
 	lastApplied int32
+	replState   []*replicationState
+	commitment  *commitment
 
-	nextIndex  []int32
-	matchIndex []int32
-
-	snapshot       *Snapshot
-	snapshotStatus int32
+	// For System Monitor Use
+	threadGroup sync.WaitGroup
+	threadCnt   int32
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+func (rf *Raft) run() {
+	defer DPrintf("[%v]Stop Run", rf.getServerDetail())
+	for {
+		select {
+		case <-rf.shutdownCh:
+			return
+		default:
+		}
+
+		switch rf.role {
+		case LEADER:
+			rf.runLeader()
+		case CANDIDATE:
+			rf.runCandidate()
+		case FOLLOWER:
+			rf.runFollower()
+		}
+	}
+}
+
+// Follower的功能
+//
+//	1.处理RPC
+//	2.发送Commited Log到Tester
+//	3.检查是否选举超时
+func (rf *Raft) runFollower() {
+	DPrintf("[%v]Run Follower", rf.getServerDetail())
+	defer DPrintf("[%v]Stop Run Follower", rf.getServerDetail())
+
+	electTimeoutCh := electionTimer()
+	for {
+		select {
+		case <-rf.shutdownCh:
+			return
+		case rpc := <-rf.rpcCh:
+			rf.handleRPC(rpc)
+		case <-electTimeoutCh:
+			if now()-rf.lastContact >= ELECTION_TIMEOUT {
+				DPrintf("[%v]Election Timeout", rf.getServerDetail())
+				rf.setRole(CANDIDATE)
+				return
+			}
+			electTimeoutCh = electionTimer()
+		case <-rf.commitment.commitCh:
+			rf.sendCommitedLogToTester()
+		}
+	}
+}
+
+// Candidate的功能
+// 包含Follower的所有功能，除此之外：
+// 向集群其他Server请求投票，如果选举超时还未收到过半选票，重新开始新一轮投票
+func (rf *Raft) runCandidate() {
+	DPrintf("[%v]Run Candidate", rf.getServerDetail())
+	defer DPrintf("[%v]Stop Run Candidate", rf.getServerDetail())
+
+	voteCh, voteCnt := rf.electSelf(), rf.majority
+	electTimeoutCh := electionTimer()
+	for rf.getRole() == CANDIDATE {
+		select {
+		case <-rf.shutdownCh:
+			return
+		case rpc := <-rf.rpcCh:
+			rf.handleRPC(rpc)
+		case vote := <-voteCh:
+			if vote.Term > rf.currentTerm {
+				DPrintf("[%v]Newer term %d discovered, Turn to follower", rf.getServerDetail(), vote.Term)
+				rf.setRole(FOLLOWER)
+				rf.setCurrentTerm(vote.Term)
+				rf.persist()
+				return
+			}
+
+			if vote.VoteGranted {
+				DPrintf("[%v]%d Vote", rf.getServerDetail(), vote.voterId)
+				if voteCnt--; voteCnt == 0 {
+					DPrintf("[%v]Get Majority Vote, Become Leader", rf.getServerDetail())
+					rf.setRole(LEADER)
+					rf.persist()
+					return
+				}
+			}
+		case <-electTimeoutCh:
+			return
+		case <-rf.commitment.commitCh:
+			rf.sendCommitedLogToTester()
+		}
+	}
+}
+
+// Leader的功能
+//
+//	1.和Follower同步Log
+//	2.定时向Follower发送心跳消息
+//	3.处理 RPC
+func (rf *Raft) runLeader() {
+	DPrintf("[%v]Run Leader", rf.getServerDetail())
+	defer func() {
+		rf.replState = nil
+		DPrintf("[%v]Stop Run Leader", rf.getServerDetail())
+	}()
+
+	rf.logMu.RLock()
+	var replState []*replicationState
+	for serverNo := range rf.peers {
+		if int32(serverNo) == rf.me {
+			continue
+		}
+
+		// 为每个Peer创建一个replicationState
+		s := &replicationState{
+			id:          serverNo,
+			leaderId:    rf.me,
+			currentTerm: rf.getCurrentTerm(),
+			nextIndex:   rf.getLastLogIndex() + 1,
+			stopChan:    make(chan struct{}, 1),
+			triggerChan: make(chan struct{}, 1),
+			commitment:  rf.commitment,
+		}
+		replState = append(replState, s)
+		rf.goFunc(func() { rf.logDispatcher(s) }, "LogDispatcher")
+	}
+	rf.replState = replState
+	rf.logMu.RUnlock()
+
+	defer func() {
+		for _, repl := range rf.replState {
+			DPrintf("[%v]Close %d's Replication Chan", rf.getServerDetail(), repl.id)
+			close(repl.stopChan)
+		}
+	}()
+
+	for rf.isLeader() {
+		select {
+		case <-rf.shutdownCh:
+			return
+		case rpc := <-rf.rpcCh:
+			rf.handleRPC(rpc)
+		case <-rf.commitment.commitCh:
+			rf.sendCommitedLogToTester()
+		}
+	}
+}
+
+func (rf *Raft) handleRPC(rpc *RPC) {
+	args, reply := rpc.req, rpc.res
+	switch args.(type) {
+	case *RequestVoteRequest:
+		rf.handleRequestVoteRPC(args.(*RequestVoteRequest), reply.(*RequestVoteResponse))
+	case *AppendEntriesRequest:
+		rf.handleAppendEntriesRPC(args.(*AppendEntriesRequest), reply.(*AppendEntriesResponse))
+	}
+	asyncNotifyCh(rpc.replyChan)
+}
+
 func (rf *Raft) GetState() (int, bool) {
-	return int(rf.getCurrentTerm()), rf.getRole() == LEADER
+	return int(rf.getCurrentTerm()), rf.isLeader()
 }
 
 func (rf *Raft) isLeader() bool {
@@ -125,8 +279,10 @@ func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
 }
 
 func (rf *Raft) Kill() {
-	rf.killChan <- true
+	DPrintf("[%v]Kill All Thread", rf.getServerDetail())
+	close(rf.shutdownCh)
 	atomic.StoreInt32(&rf.dead, 1)
+	//rf.threadGroup.Wait()
 }
 
 func (rf *Raft) killed() bool {
@@ -140,43 +296,27 @@ func (rf *Raft) turnToFollower(term int32, votedFor int32) {
 	rf.votedFor = votedFor
 }
 
-func (rf *Raft) turnToLeader() {
-	// Leader必须由Candidate转变而来
-	rf.setRole(LEADER)
-	rf.votedFor = rf.me
-	for idx := range rf.peers {
-		rf.nextIndex[idx] = rf.getLastLogIndex() + 1
-		rf.matchIndex[idx] = 0
-	}
-	go rf.sendHeartbeat()
-}
-
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister,
+	applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.applyCh = applyCh
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = int32(me)
 	rf.name = rand.Int31() % 100
-	rf.startElectionTimer()
-	rf.killChan = make(chan bool, 1)
+	rf.shutdownCh = make(chan struct{}, 1)
+	rf.rpcCh = make(chan *RPC)
+	rf.commitment = &commitment{
+		matchIndex: make([]int32, len(rf.peers)),
+		commitCh:   make(chan struct{}, 1),
+	}
 
 	rf.majority = int32(len(rf.peers) / 2)
 	rf.role = FOLLOWER
 	rf.votedFor = -1
 	rf.log = append(rf.log, LogEntry{Term: 0, Index: 0, Command: nil})
 
-	peerNum := len(peers)
-	rf.lastSendTime = make([]int64, peerNum)
-	rf.nextIndex = make([]int32, peerNum)
-	for i := 0; i < peerNum; i++ {
-		rf.nextIndex[i] = 1
-	}
-	rf.matchIndex = make([]int32, peerNum)
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
-	go rf.ticker()
-	go rf.sendCommitedLogToTester()
-	//go rf.printGoroutineCnt()
+	rf.goFunc(func() { rf.run() }, "Main-Loop")
 	return rf
 }

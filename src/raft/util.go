@@ -5,7 +5,6 @@ import (
 	"log"
 	"math/rand"
 	"runtime"
-	"sort"
 	"time"
 )
 
@@ -18,9 +17,17 @@ func DPrintf(format string, a ...interface{}) {
 	}
 }
 
-func getRandomTimeoutMs() time.Duration {
+func electionTimer() <-chan time.Time {
+	return time.After(electionRandomTimeoutMs())
+}
+
+func electionRandomTimeoutMs() time.Duration {
 	ms := 300 + (rand.Int63() % 150)
 	return time.Duration(ms) * time.Millisecond
+}
+
+func (rf *Raft) updateLastContact() {
+	rf.lastContact = now()
 }
 
 func (rf *Raft) getRoleStr() string {
@@ -60,25 +67,57 @@ func compareLog(LogIdx1, LogTerm1, LogIdx2, LogTerm2 int32) bool {
 	return LogIdx1 >= LogIdx2
 }
 
-func (rf *Raft) findCommitIndex() int32 {
-	var slice []int
-	for idx, val := range rf.matchIndex {
-		if idx == int(rf.me) {
-			continue
-		}
-		slice = append(slice, int(val))
-	}
-	sort.Sort(sort.Reverse(sort.IntSlice(slice)))
-	return int32(slice[rf.majority-1])
-}
+//func (rf *Raft) findCommitIndex() int32 {
+//	var slice []int
+//	for idx, val := range rf.matchIndex {
+//		if idx == int(rf.me) {
+//			continue
+//		}
+//		slice = append(slice, int(val))
+//	}
+//	sort.Sort(sort.Reverse(sort.IntSlice(slice)))
+//	return int32(slice[rf.majority-1])
+//}
 
-func getCurrentTime() int64 {
+func now() int64 {
 	return time.Now().UnixMilli()
 }
 
 func (rf *Raft) printGoroutineCnt() {
-	for !rf.killed() {
-		fmt.Printf("当前协程数量:%d\n", runtime.NumGoroutine())
-		time.Sleep(time.Second)
+	defer DPrintf("[%v]stop print GoroutineCnt", rf.getServerDetail())
+	for {
+		select {
+		case <-rf.shutdownCh:
+			return
+		case <-time.After(time.Second):
+			fmt.Printf("当前协程数量:%d\n", runtime.NumGoroutine())
+		}
 	}
 }
+
+func asyncNotifyCh(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (rf *Raft) goFunc(function func(), name string) {
+	rf.threadGroup.Add(1)
+	rf.incThreadCnt()
+	//DPrintf("[%v]Func %s Start, Cnt:%d", rf.getServerDetail(), name, rf.getThreadCnt())
+	go func() {
+		//defer
+		function()
+		rf.threadGroup.Done()
+		rf.decThreadCnt()
+		//DPrintf("[%v]Func %s Finish, Cnt:%d", rf.getServerDetail(), name, rf.getThreadCnt())
+	}()
+}
+
+// Needed for sorting []uint64, used to determine commitment
+type int32Slice []int32
+
+func (p int32Slice) Len() int           { return len(p) }
+func (p int32Slice) Less(i, j int) bool { return p[i] < p[j] }
+func (p int32Slice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }

@@ -2,20 +2,15 @@ package raft
 
 import (
 	"sync/atomic"
-	"time"
 )
 
-func (rf *Raft) getElectionTimer() int32 {
-	return atomic.LoadInt32(&rf.heartbeat)
-}
-
-func (rf *Raft) closeElectionTimer() {
-	atomic.StoreInt32(&rf.heartbeat, 0)
-}
-
-func (rf *Raft) startElectionTimer() {
-	atomic.StoreInt32(&rf.heartbeat, 1)
-}
+//func (rf *Raft) getLastContact() int64 {
+//	return atomic.LoadInt64(&rf.lastContact)
+//}
+//
+//func (rf *Raft) setLastContact() {
+//	atomic.StoreInt64(&rf.lastContact, now())
+//}
 
 func (rf *Raft) getRole() int32 {
 	return atomic.LoadInt32(&rf.role)
@@ -25,15 +20,18 @@ func (rf *Raft) setRole(newRole int32) {
 	atomic.StoreInt32(&rf.role, newRole)
 }
 
-func (rf *Raft) resetHeartbeatTimer(idx int) {
-	atomic.StoreInt64(&rf.lastSendTime[idx], getCurrentTime())
+func (rf *Raft) setMatchIdx(serverNo int, matchIndex int32) {
+	atomic.StoreInt32(&rf.commitment.matchIndex[serverNo], matchIndex)
 }
 
-func (rf *Raft) heartbeatTimeout(idx int) bool {
-	gap := time.Millisecond * 100
-	lastSendTime := atomic.LoadInt64(&rf.lastSendTime[idx])
-	return getCurrentTime()-lastSendTime >= gap.Milliseconds()
-}
+//func (rf *Raft) resetHeartbeatTimer() {
+//	atomic.StoreInt64(&rf.lastContact, getCurrentTime())
+//}
+
+//func heartbeatTimeout(lastContact int64) bool {
+//	gap := time.Millisecond * 100
+//	return now()-lastContact >= gap.Milliseconds()
+//}
 
 func (rf *Raft) getLastLogIndex() int32 {
 	if len(rf.log) == 0 {
@@ -60,13 +58,14 @@ func (rf *Raft) getLogPosByIdx(idx int32) int32 {
 	return idx
 }
 
-func (rf *Raft) getLogIndexByIdx(idx int32) int32 {
-	pos := rf.getLogPosByIdx(idx)
-	if pos < 0 {
-		return rf.snapshot.LastIncludedIndex
-	}
-	return rf.log[pos].Index
-}
+//
+//	func (rf *Raft) getLogIndexByIdx(idx int32) int32 {
+//		pos := rf.getLogPosByIdx(idx)
+//		if pos < 0 {
+//			return rf.snapshot.LastIncludedIndex
+//		}
+//		return rf.log[pos].Index
+//	}
 
 func (rf *Raft) getLogTermByIdx(idx int32) int32 {
 	pos := rf.getLogPosByIdx(idx)
@@ -86,4 +85,23 @@ func (rf *Raft) incCurrentTerm() int32 {
 
 func (rf *Raft) setCurrentTerm(newTerm int32) {
 	atomic.StoreInt32(&rf.currentTerm, newTerm)
+}
+
+//
+//func (rf *Raft) getSnapshot() *Snapshot {
+//	rf.snapshotLock.Lock()
+//	defer rf.snapshotLock.Unlock()
+//	return rf.snapshot
+//}
+
+func (rf *Raft) incThreadCnt() {
+	atomic.AddInt32(&rf.threadCnt, 1)
+}
+
+func (rf *Raft) decThreadCnt() {
+	atomic.AddInt32(&rf.threadCnt, -1)
+}
+
+func (rf *Raft) getThreadCnt() int32 {
+	return atomic.LoadInt32(&rf.threadCnt)
 }

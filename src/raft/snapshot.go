@@ -1,8 +1,18 @@
 package raft
 
-import "fmt"
+import (
+	"fmt"
+)
 
-type InstallSnapshot struct {
+type Request interface {
+	String() string
+}
+
+type Response interface {
+	String() string
+}
+
+type InstallSnapshotRequest struct {
 	Term              int32
 	LeaderId          int32
 	LastIncludedIndex int32
@@ -10,12 +20,16 @@ type InstallSnapshot struct {
 	Data              []byte
 }
 
-func (snapshot *InstallSnapshot) String() string {
-	return fmt.Sprintf("{Term:%d LeaderId:%v LastIncludedIndex:%d LastIncludedTerm:%d}", snapshot.Term, snapshot.LeaderId, snapshot.LastIncludedIndex, snapshot.LastIncludedTerm)
+func (req *InstallSnapshotRequest) String() string {
+	return fmt.Sprintf("{Term:%d Leader:%v LastIncludedIndex:%d LastIncludedTerm:%d}", req.Term, req.LeaderId, req.LastIncludedIndex, req.LastIncludedTerm)
 }
 
-type InstallSnapshotReply struct {
+type InstallSnapshotResponse struct {
 	Term int32
+}
+
+func (res *InstallSnapshotResponse) String() string {
+	return fmt.Sprintf("{Term:%d}", res.Term)
 }
 
 type Snapshot struct {
@@ -28,8 +42,8 @@ func (snapshot *Snapshot) String() string {
 	return fmt.Sprintf("{LastIncludedIndex:%d LastIncludedTerm:%d}", snapshot.LastIncludedIndex, snapshot.LastIncludedTerm)
 }
 
-func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
-	snapshot := &InstallSnapshot{
+func (rf *Raft) buildInstallSnapshot(snapshot *Snapshot) *InstallSnapshotRequest {
+	installSnapshot := &InstallSnapshotRequest{
 		Term:              rf.getCurrentTerm(),
 		LeaderId:          rf.me,
 		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
@@ -37,43 +51,81 @@ func (rf *Raft) buildInstallSnapshot() *InstallSnapshot {
 		Data:              make([]byte, len(rf.snapshot.Data)),
 	}
 	copy(snapshot.Data, rf.snapshot.Data)
-	return snapshot
+	return installSnapshot
 }
 
-func (rf *Raft) sendSnapshotToFollower(serverNo int, args *InstallSnapshot) int {
-	rf.resetHeartbeatTimer(serverNo)
+//func (rf *Raft) sendSnapshotToFollower(s *replicationState) (shouldStop bool) {
+//	rf.resetHeartbeatTimer(s.id)
+//	DPrintf("[%v]Send Snapshot To %d", rf.getServerDetail(), s.id)
+//
+//	snapshot := rf.getSnapshot()
+//	installSnapshot := &InstallSnapshotRequest{
+//		Term:              rf.getCurrentTerm(),
+//		LeaderId:          rf.me,
+//		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
+//		LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
+//		Data:              make([]byte, len(rf.snapshot.Data)),
+//	}
+//	copy(snapshot.Data, rf.snapshot.Data)
+//
+//	res := &InstallSnapshotResponse{}
+//	ok := rf.peers[s.id].Call("Raft.AcceptSnapshot", installSnapshot, res)
+//	if !ok {
+//		DPrintf("[%v]Send Snapshot To %d Timeout", rf.getServerDetail(), serverNo)
+//		return false
+//	}
+//
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	if res.Term > rf.getCurrentTerm() {
+//		DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
+//		rf.turnToFollower(res.Term, -1)
+//		rf.persist()
+//		return ERROR
+//	}
+//
+//	idx := req.LastIncludedIndex
+//	rf.nextIndex[serverNo] = max(rf.nextIndex[serverNo], idx+1)
+//	rf.matchIndex[serverNo] = max(rf.matchIndex[serverNo], idx)
+//	DPrintf("[%v]Success Send Snapshot To %d, Update NextIndex To %d, MatchIndex To %d", rf.getServerDetail(), serverNo, idx+1, idx)
+//
+//	return SNAPSHOTCOMPLETE
+//}
 
-	DPrintf("[%v]Send Snapshot To %d", rf.getServerDetail(), serverNo)
-	reply := &InstallSnapshotReply{}
-	ok := rf.peers[serverNo].Call("Raft.AcceptSnapshot", args, reply)
-	if !ok {
-		if rf.checkRaftStatus(args.Term) {
-			return ERROR
-		}
-		DPrintf("[%v]Send Snapshot To %d Timeout", rf.getServerDetail(), serverNo)
-		return TIMEOUT
-	}
+//func (rf *Raft) sendSnapshotToFollower(serverNo int, req *InstallSnapshotRequest) int {
+//	rf.resetHeartbeatTimer(serverNo)
+//
+//	DPrintf("[%v]Send Snapshot To %d", rf.getServerDetail(), serverNo)
+//	res := &InstallSnapshotResponse{}
+//	ok := rf.peers[serverNo].Call("Raft.AcceptSnapshot", req, res)
+//	if !ok {
+//		if rf.checkRaftStatus(req.Term) {
+//			return ERROR
+//		}
+//		DPrintf("[%v]Send Snapshot To %d Timeout", rf.getServerDetail(), serverNo)
+//		return TIMEOUT
+//	}
+//
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	if res.Term > rf.getCurrentTerm() {
+//		DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
+//		rf.turnToFollower(res.Term, -1)
+//		rf.persist()
+//		return ERROR
+//	}
+//
+//	idx := req.LastIncludedIndex
+//	rf.nextIndex[serverNo] = max(rf.nextIndex[serverNo], idx+1)
+//	rf.matchIndex[serverNo] = max(rf.matchIndex[serverNo], idx)
+//	DPrintf("[%v]Success Send Snapshot To %d, Update NextIndex To %d, MatchIndex To %d", rf.getServerDetail(), serverNo, idx+1, idx)
+//
+//	return SNAPSHOTCOMPLETE
+//}
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if reply.Term > rf.getCurrentTerm() {
-		DPrintf("[%v]Follower Term > My Term, Back To Follower\n", rf.getServerDetail())
-		rf.turnToFollower(reply.Term, -1)
-		rf.persist()
-		return ERROR
-	}
-
-	idx := args.LastIncludedIndex
-	rf.nextIndex[serverNo] = max(rf.nextIndex[serverNo], idx+1)
-	rf.matchIndex[serverNo] = max(rf.matchIndex[serverNo], idx)
-	DPrintf("[%v]Success Send Snapshot To %d, Update NextIndex To %d, MatchIndex To %d", rf.getServerDetail(), serverNo, idx+1, idx)
-
-	return SNAPSHOTCOMPLETE
-}
-
-func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+func (rf *Raft) AcceptSnapshot(args *InstallSnapshotRequest, reply *InstallSnapshotResponse) {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
 	DPrintf("[%v]Received Snapshot %v", rf.getServerDetail(), args)
 	term := rf.getCurrentTerm()
 	reply.Term = term
@@ -82,7 +134,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 		return
 	}
 
-	rf.closeElectionTimer()
+	//rf.()
 
 	if args.Term > term || rf.getRole() == CANDIDATE {
 		DPrintf("[%v]Received Snapshot From %d, Term:%d > My Term:%d, Turn to follower", rf.getServerDetail(),
@@ -109,7 +161,7 @@ func (rf *Raft) AcceptSnapshot(args *InstallSnapshot, reply *InstallSnapshotRepl
 		}
 	}
 	rf.log = rf.log[idx+1:]
-	rf.commitIndex = max(rf.commitIndex, rf.snapshot.LastIncludedIndex)
+	//rf.commitIndex = max(rf.commitIndex, rf.snapshot.LastIncludedIndex)
 	rf.persist()
 	DPrintf("[%v]Success Build Snapshot:%v", rf.getServerDetail(), rf.snapshot)
 	DPrintf("[%v]After Build Snapshot, LastLogIdx:%d Log Length:%d", rf.getServerDetail(), rf.getLastLogIndex(), len(rf.log))
@@ -131,25 +183,26 @@ func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
 
 // 只有Send Command到Chan时，该方法才可能被调用
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	DPrintf("[%v]Build Snapshot, Index:%d, Sz:%d", rf.getServerDetail(), index, len(snapshot))
-
-	if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= int32(index) {
-		return
-	}
-
-	snap := &Snapshot{}
-	snap.LastIncludedIndex = int32(index)
-	snap.LastIncludedTerm = rf.getLogTermByIdx(int32(index))
-	snap.Data = make([]byte, len(snapshot))
-	copy(snap.Data, snapshot)
-
-	// 把[0~index]之间的日志都删掉
-	pos := rf.getLogPosByIdx(int32(index)) + 1
-	rf.log = rf.log[pos:]
-	rf.snapshot = snap
-	rf.persist()
-
-	DPrintf("[%v]Remove Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, LogSz:%d", rf.getServerDetail(), index, rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.log))
+	// todo
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
+	//DPrintf("[%v]Build Snapshot, Index:%d, Sz:%d", rf.getServerDetail(), index, len(snapshot))
+	//
+	//if rf.snapshot != nil && rf.snapshot.LastIncludedIndex >= int32(index) {
+	//	return
+	//}
+	//
+	//snap := &Snapshot{}
+	//snap.LastIncludedIndex = int32(index)
+	//snap.LastIncludedTerm = rf.getLogTermByIdx(int32(index))
+	//snap.Data = make([]byte, len(snapshot))
+	//copy(snap.Data, snapshot)
+	//
+	//// 把[0~index]之间的日志都删掉
+	//pos := rf.getLogPosByIdx(int32(index)) + 1
+	//rf.log = rf.log[pos:]
+	//rf.snapshot = snap
+	//rf.persist()
+	//
+	//DPrintf("[%v]Remove Log Before Index:%d, LastIncludedIndex:%d, LastIncludedTerm:%d, LogSz:%d", rf.getServerDetail(), index, rf.snapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm, len(rf.log))
 }
