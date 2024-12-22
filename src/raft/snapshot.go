@@ -1,9 +1,5 @@
 package raft
 
-import (
-	"fmt"
-)
-
 type Request interface {
 	String() string
 }
@@ -20,39 +16,40 @@ type InstallSnapshotRequest struct {
 	Data              []byte
 }
 
-func (req *InstallSnapshotRequest) String() string {
-	return fmt.Sprintf("{Term:%d Leader:%v LastIncludedIndex:%d LastIncludedTerm:%d}", req.Term, req.LeaderId, req.LastIncludedIndex, req.LastIncludedTerm)
-}
-
-type InstallSnapshotResponse struct {
-	Term int32
-}
-
-func (res *InstallSnapshotResponse) String() string {
-	return fmt.Sprintf("{Term:%d}", res.Term)
-}
-
-type Snapshot struct {
-	LastIncludedIndex int32
-	LastIncludedTerm  int32
-	Data              []byte
-}
-
-func (snapshot *Snapshot) String() string {
-	return fmt.Sprintf("{LastIncludedIndex:%d LastIncludedTerm:%d}", snapshot.LastIncludedIndex, snapshot.LastIncludedTerm)
-}
-
-func (rf *Raft) buildInstallSnapshot(snapshot *Snapshot) *InstallSnapshotRequest {
-	installSnapshot := &InstallSnapshotRequest{
-		Term:              rf.getCurrentTerm(),
-		LeaderId:          rf.me,
-		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
-		LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
-		Data:              make([]byte, len(rf.snapshot.Data)),
-	}
-	copy(snapshot.Data, rf.snapshot.Data)
-	return installSnapshot
-}
+//
+//func (req *InstallSnapshotRequest) String() string {
+//	return fmt.Sprintf("{Term:%d Leader:%v LastIncludedIndex:%d LastIncludedTerm:%d}", req.Term, req.LeaderId, req.LastIncludedIndex, req.LastIncludedTerm)
+//}
+//
+//type InstallSnapshotResponse struct {
+//	Term int32
+//}
+//
+//func (res *InstallSnapshotResponse) String() string {
+//	return fmt.Sprintf("{Term:%d}", res.Term)
+//}
+//
+////type Snapshot struct {
+////	LastIncludedIndex int32
+////	LastIncludedTerm  int32
+////	Data              []byte
+////}
+//
+//func (snapshot *Snapshot) String() string {
+//	return fmt.Sprintf("{LastIncludedIndex:%d LastIncludedTerm:%d}", snapshot.LastIncludedIndex, snapshot.LastIncludedTerm)
+//}
+//
+//func (rf *Raft) buildInstallSnapshot(snapshot *Snapshot) *InstallSnapshotRequest {
+//	installSnapshot := &InstallSnapshotRequest{
+//		Term:              rf.getCurrentTerm(),
+//		LeaderId:          rf.me,
+//		LastIncludedIndex: rf.snapshot.LastIncludedIndex,
+//		LastIncludedTerm:  rf.snapshot.LastIncludedTerm,
+//		Data:              make([]byte, len(rf.snapshot.Data)),
+//	}
+//	copy(snapshot.Data, rf.snapshot.Data)
+//	return installSnapshot
+//}
 
 //func (rf *Raft) sendSnapshotToFollower(s *replicationState) (shouldStop bool) {
 //	rf.resetHeartbeatTimer(s.id)
@@ -89,7 +86,7 @@ func (rf *Raft) buildInstallSnapshot(snapshot *Snapshot) *InstallSnapshotRequest
 //	rf.matchIndex[serverNo] = max(rf.matchIndex[serverNo], idx)
 //	DPrintf("[%v]Success Send Snapshot To %d, Update NextIndex To %d, MatchIndex To %d", rf.getServerDetail(), serverNo, idx+1, idx)
 //
-//	return SNAPSHOTCOMPLETE
+//	return SNAPSHOT_COMPLETE
 //}
 
 //func (rf *Raft) sendSnapshotToFollower(serverNo int, req *InstallSnapshotRequest) int {
@@ -120,66 +117,52 @@ func (rf *Raft) buildInstallSnapshot(snapshot *Snapshot) *InstallSnapshotRequest
 //	rf.matchIndex[serverNo] = max(rf.matchIndex[serverNo], idx)
 //	DPrintf("[%v]Success Send Snapshot To %d, Update NextIndex To %d, MatchIndex To %d", rf.getServerDetail(), serverNo, idx+1, idx)
 //
-//	return SNAPSHOTCOMPLETE
+//	return SNAPSHOT_COMPLETE
 //}
 
-func (rf *Raft) AcceptSnapshot(args *InstallSnapshotRequest, reply *InstallSnapshotResponse) {
-	rf.logMu.Lock()
-	defer rf.logMu.Unlock()
-	DPrintf("[%v]Received Snapshot %v", rf.getServerDetail(), args)
-	term := rf.getCurrentTerm()
-	reply.Term = term
-
-	if args.Term < term {
-		return
-	}
-
-	//rf.()
-
-	if args.Term > term || rf.getRole() == CANDIDATE {
-		DPrintf("[%v]Received Snapshot From %d, Term:%d > My Term:%d, Turn to follower", rf.getServerDetail(),
-			args.Term, term, args.LeaderId)
-		rf.turnToFollower(args.Term, args.LeaderId)
-		rf.persist()
-	}
-
-	// snapshot中保存的是commitLog，所以和Commit Log一样，只能向前推进
-	if rf.snapshot != nil && args.LastIncludedIndex <= rf.snapshot.LastIncludedIndex {
-		return
-	}
-
-	rf.snapshot = &Snapshot{
-		LastIncludedIndex: args.LastIncludedIndex,
-		LastIncludedTerm:  args.LastIncludedTerm,
-		Data:              args.Data,
-	}
-
-	idx := len(rf.log) - 1
-	for ; idx >= 0; idx-- {
-		if rf.log[idx].Index <= args.LastIncludedIndex {
-			break
-		}
-	}
-	rf.log = rf.log[idx+1:]
-	//rf.commitIndex = max(rf.commitIndex, rf.snapshot.LastIncludedIndex)
-	rf.persist()
-	DPrintf("[%v]Success Build Snapshot:%v", rf.getServerDetail(), rf.snapshot)
-	DPrintf("[%v]After Build Snapshot, LastLogIdx:%d Log Length:%d", rf.getServerDetail(), rf.getLastLogIndex(), len(rf.log))
-}
-
-func (rf *Raft) sendSnapshotToTester(snapshot *Snapshot) {
-	if snapshot == nil {
-		return
-	}
-	DPrintf("[%v]Send Snapshot %v To Tester", rf.getServerDetail(), snapshot)
-	msg := ApplyMsg{
-		SnapshotValid: true,
-		SnapshotIndex: int(snapshot.LastIncludedIndex),
-		SnapshotTerm:  int(snapshot.LastIncludedTerm),
-		Snapshot:      snapshot.Data,
-	}
-	rf.applyCh <- msg
-}
+//func (rf *Raft) AcceptSnapshot(args *InstallSnapshotRequest, reply *InstallSnapshotResponse) {
+//	rf.logMu.Lock()
+//	defer rf.logMu.Unlock()
+//	DPrintf("[%v]Received Snapshot %v", rf.getServerDetail(), args)
+//	term := rf.getCurrentTerm()
+//	reply.Term = term
+//
+//	if args.Term < term {
+//		return
+//	}
+//
+//	//rf.()
+//
+//	if args.Term > term || rf.getRole() == CANDIDATE {
+//		DPrintf("[%v]Received Snapshot From %d, Term:%d > My Term:%d, Turn to follower", rf.getServerDetail(),
+//			args.Term, term, args.LeaderId)
+//		rf.turnToFollower(args.Term, args.LeaderId)
+//		rf.persist()
+//	}
+//
+//	// snapshot中保存的是commitLog，所以和Commit Log一样，只能向前推进
+//	if rf.snapshot != nil && args.LastIncludedIndex <= rf.snapshot.LastIncludedIndex {
+//		return
+//	}
+//
+//	rf.snapshot = &Snapshot{
+//		LastIncludedIndex: args.LastIncludedIndex,
+//		LastIncludedTerm:  args.LastIncludedTerm,
+//		Data:              args.Data,
+//	}
+//
+//	idx := len(rf.log) - 1
+//	for ; idx >= 0; idx-- {
+//		if rf.log[idx].Index <= args.LastIncludedIndex {
+//			break
+//		}
+//	}
+//	rf.log = rf.log[idx+1:]
+//	//rf.commitIndex = max(rf.commitIndex, rf.snapshot.LastIncludedIndex)
+//	rf.persist()
+//	DPrintf("[%v]Success Build Snapshot:%v", rf.getServerDetail(), rf.snapshot)
+//	DPrintf("[%v]After Build Snapshot, LastLogIdx:%d Log Length:%d", rf.getServerDetail(), rf.getLastLogIndex(), len(rf.log))
+//}
 
 // 只有Send Command到Chan时，该方法才可能被调用
 func (rf *Raft) Snapshot(index int, snapshot []byte) {

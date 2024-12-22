@@ -26,7 +26,7 @@ func electionRandomTimeoutMs() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func (rf *Raft) updateLastContact() {
+func (rf *Raft) setLastContact() {
 	rf.lastContact = now()
 }
 
@@ -60,11 +60,11 @@ func max(x, y int32) int32 {
 }
 
 // 判断log1和log2是否至少一样新或者更新
-func compareLog(LogIdx1, LogTerm1, LogIdx2, LogTerm2 int32) bool {
-	if LogTerm1 != LogTerm2 {
-		return LogTerm1 > LogTerm2
+func compareLog(newIdx, newTerm, oldIdx, oldTerm int32) bool {
+	if oldTerm != newTerm {
+		return newTerm > oldTerm
 	}
-	return LogIdx1 >= LogIdx2
+	return newIdx >= oldIdx
 }
 
 //func (rf *Raft) findCommitIndex() int32 {
@@ -102,16 +102,15 @@ func asyncNotifyCh(ch chan struct{}) {
 	}
 }
 
-func (rf *Raft) goFunc(function func(), name string) {
+func (rf *Raft) goFunc(function func(), funcName string) {
 	rf.threadGroup.Add(1)
 	rf.incThreadCnt()
-	//DPrintf("[%v]Func %s Start, Cnt:%d", rf.getServerDetail(), name, rf.getThreadCnt())
+	//DPrintf("[%v]Func %s Start, Cnt:%d", rf.getServerDetail(), funcName, rf.getThreadCnt())
 	go func() {
-		//defer
 		function()
 		rf.threadGroup.Done()
 		rf.decThreadCnt()
-		//DPrintf("[%v]Func %s Finish, Cnt:%d", rf.getServerDetail(), name, rf.getThreadCnt())
+		//DPrintf("[%v]Func %s Finish, Cnt:%d", rf.getServerDetail(), funcName, rf.getThreadCnt())
 	}()
 }
 
@@ -121,3 +120,9 @@ type int32Slice []int32
 func (p int32Slice) Len() int           { return len(p) }
 func (p int32Slice) Less(i, j int) bool { return p[i] < p[j] }
 func (p int32Slice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+
+func Assert(condition bool, errorMsg string) {
+	if !condition {
+		panic(errorMsg)
+	}
+}

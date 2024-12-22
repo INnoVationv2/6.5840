@@ -11,8 +11,8 @@ func (rf *Raft) sendRPC(target int, req interface{}, res interface{}) bool {
 			ok = rf.sendRequestVote(target, req.(*RequestVoteRequest), res.(*RequestVoteResponse))
 		case *AppendEntriesRequest:
 			ok = rf.sendAppendEntries(target, req.(*AppendEntriesRequest), res.(*AppendEntriesResponse))
-		case *InstallSnapshotRequest:
-			ok = rf.sendInstallSnapshot(target, req.(*InstallSnapshotRequest), res.(*InstallSnapshotResponse))
+			//case *InstallSnapshotRequest:
+			//	ok = rf.sendInstallSnapshot(target, req.(*InstallSnapshotRequest), res.(*InstallSnapshotResponse))
 		}
 		rpcCh <- ok
 	}, "SendRPC")
@@ -34,9 +34,9 @@ func (rf *Raft) sendAppendEntries(target int, req *AppendEntriesRequest, res *Ap
 	return rf.peers[target].Call("Raft.AppendEntries", req, res)
 }
 
-func (rf *Raft) sendInstallSnapshot(target int, req *InstallSnapshotRequest, res *InstallSnapshotResponse) bool {
-	return rf.peers[target].Call("Raft.InstallSnapshot", req, res)
-}
+//func (rf *Raft) sendInstallSnapshot(target int, req *InstallSnapshotRequest, res *InstallSnapshotResponse) bool {
+//	return rf.peers[target].Call("Raft.InstallSnapshot", req, res)
+//}
 
 func (rf *Raft) RequestVote(req *RequestVoteRequest, res *RequestVoteResponse) {
 	DPrintf("[%v]Receive Request Vote RPC:%v", rf.getServerDetail(), req)
@@ -49,10 +49,10 @@ func (rf *Raft) AppendEntries(req *AppendEntriesRequest, res *AppendEntriesRespo
 	//DPrintf("[%v]Completed Append Entries RPC:%v", rf.getServerDetail(), req)
 }
 
-func (rf *Raft) InstallSnapshot(req *InstallSnapshotRequest, res *InstallSnapshotResponse) {
-	DPrintf("[%v]Receive Install Snapshot RPC:%v", rf.getServerDetail(), req)
-	rf.handleRpc(req, res)
-}
+//func (rf *Raft) InstallSnapshot(req *InstallSnapshotRequest, res *InstallSnapshotResponse) {
+//	DPrintf("[%v]Receive Install Snapshot RPC:%v", rf.getServerDetail(), req)
+//	rf.handleRpc(req, res)
+//}
 
 func (rf *Raft) handleRpc(req interface{}, res interface{}) {
 	rpc := &RPC{

@@ -20,67 +20,34 @@ func (rf *Raft) setRole(newRole int32) {
 	atomic.StoreInt32(&rf.role, newRole)
 }
 
-func (rf *Raft) setMatchIdx(serverNo int, matchIndex int32) {
-	atomic.StoreInt32(&rf.commitment.matchIndex[serverNo], matchIndex)
+func (c *commitment) setMatchIdx(serverNo int, matchIndex int32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.matchIndex[serverNo] = max(c.matchIndex[serverNo], matchIndex)
 }
 
-//func (rf *Raft) resetHeartbeatTimer() {
-//	atomic.StoreInt64(&rf.lastContact, getCurrentTime())
-//}
+func (rf *Raft) setLastLog(lastLogIdx, lastLogTerm int32) {
+	rf.statusMu.Lock()
+	defer rf.statusMu.Unlock()
 
-//func heartbeatTimeout(lastContact int64) bool {
-//	gap := time.Millisecond * 100
-//	return now()-lastContact >= gap.Milliseconds()
-//}
+	rf.lastLogIdx, rf.lastLogTerm =
+		max(rf.lastLogIdx, lastLogIdx),
+		max(rf.lastLogTerm, lastLogTerm)
+}
 
 func (rf *Raft) getLastLogIndex() int32 {
-	if len(rf.log) == 0 {
-		return rf.snapshot.LastIncludedIndex
-	}
-	return rf.log[len(rf.log)-1].Index
+	lastLogIdx, _ := rf.getLastLog()
+	return lastLogIdx
 }
 
-func (rf *Raft) getLastLogTerm() int32 {
-	if len(rf.log) == 0 {
-		return rf.snapshot.LastIncludedTerm
-	}
-	return rf.log[len(rf.log)-1].Term
-}
-
-func (rf *Raft) getLogSz() int32 {
-	return rf.getLastLogIndex() + 1
-}
-
-func (rf *Raft) getLogPosByIdx(idx int32) int32 {
-	if rf.snapshot != nil {
-		idx = idx - rf.snapshot.LastIncludedIndex - 1
-	}
-	return idx
-}
-
-//
-//	func (rf *Raft) getLogIndexByIdx(idx int32) int32 {
-//		pos := rf.getLogPosByIdx(idx)
-//		if pos < 0 {
-//			return rf.snapshot.LastIncludedIndex
-//		}
-//		return rf.log[pos].Index
-//	}
-
-func (rf *Raft) getLogTermByIdx(idx int32) int32 {
-	pos := rf.getLogPosByIdx(idx)
-	if pos < 0 {
-		return rf.snapshot.LastIncludedTerm
-	}
-	return rf.log[pos].Term
+func (rf *Raft) getLastLog() (int32, int32) {
+	rf.statusMu.RLock()
+	defer rf.statusMu.RUnlock()
+	return rf.lastLogIdx, rf.lastLogTerm
 }
 
 func (rf *Raft) getCurrentTerm() int32 {
 	return atomic.LoadInt32(&rf.currentTerm)
-}
-
-func (rf *Raft) incCurrentTerm() int32 {
-	return atomic.AddInt32(&rf.currentTerm, 1)
 }
 
 func (rf *Raft) setCurrentTerm(newTerm int32) {
