@@ -4,16 +4,16 @@ import (
 	"sync/atomic"
 )
 
-//func (rf *Raft) getLastContact() int64 {
-//	return atomic.LoadInt64(&rf.lastContact)
-//}
-//
-//func (rf *Raft) setLastContact() {
-//	atomic.StoreInt64(&rf.lastContact, now())
-//}
-
 func (rf *Raft) getRole() int32 {
 	return atomic.LoadInt32(&rf.role)
+}
+
+func (rf *Raft) setVotedFor(votedFor int32) {
+	atomic.StoreInt32(&rf.votedFor, votedFor)
+}
+
+func (rf *Raft) getVotedFor() int32 {
+	return atomic.LoadInt32(&rf.votedFor)
 }
 
 func (rf *Raft) setRole(newRole int32) {
@@ -30,9 +30,7 @@ func (rf *Raft) setLastLog(lastLogIdx, lastLogTerm int32) {
 	rf.statusMu.Lock()
 	defer rf.statusMu.Unlock()
 
-	rf.lastLogIdx, rf.lastLogTerm =
-		max(rf.lastLogIdx, lastLogIdx),
-		max(rf.lastLogTerm, lastLogTerm)
+	rf.lastLogIdx, rf.lastLogTerm = lastLogIdx, lastLogTerm
 }
 
 func (rf *Raft) getLastLogIndex() int32 {

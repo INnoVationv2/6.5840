@@ -17,6 +17,10 @@ func DPrintf(format string, a ...interface{}) {
 	}
 }
 
+func getTime() string {
+	return time.Now().Format("15:04:05.000")
+}
+
 func electionTimer() <-chan time.Time {
 	return time.After(electionRandomTimeoutMs())
 }
@@ -59,25 +63,13 @@ func max(x, y int32) int32 {
 	return y
 }
 
-// 判断log1和log2是否至少一样新或者更新
+// 判断Candidate的Log是否和自己一样新或者更新
 func compareLog(newIdx, newTerm, oldIdx, oldTerm int32) bool {
 	if oldTerm != newTerm {
 		return newTerm > oldTerm
 	}
 	return newIdx >= oldIdx
 }
-
-//func (rf *Raft) findCommitIndex() int32 {
-//	var slice []int
-//	for idx, val := range rf.matchIndex {
-//		if idx == int(rf.me) {
-//			continue
-//		}
-//		slice = append(slice, int(val))
-//	}
-//	sort.Sort(sort.Reverse(sort.IntSlice(slice)))
-//	return int32(slice[rf.majority-1])
-//}
 
 func now() int64 {
 	return time.Now().UnixMilli()
@@ -114,7 +106,7 @@ func (rf *Raft) goFunc(function func(), funcName string) {
 	}()
 }
 
-// Needed for sorting []uint64, used to determine commitment
+// Needed for sorting []uint32, used to determine commitment
 type int32Slice []int32
 
 func (p int32Slice) Len() int           { return len(p) }

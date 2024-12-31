@@ -91,11 +91,11 @@ func (reply *AppendEntriesResponse) String() string {
 }
 
 type replicationState struct {
-	id          int // Follower's ID
-	leaderId    int32
-	currentTerm int32
-	nextIndex   int32
-	//stopChan        chan struct{}
+	id              int // Follower's ID
+	leaderId        int32
+	currentTerm     int32
+	nextIndex       int32
+	stopChan        chan struct{}
 	dispatchLogChan chan struct{}
 
 	commitment *commitment
@@ -142,23 +142,32 @@ func (c *commitment) recalculate() {
 // Lab测试提交命令的地方，但是和客户端提交command不同
 // 这里需要立刻返回，而不是等日志提交后才返回结果
 func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
-	logFuture := &LogFuture{
-		logEntry: &LogEntry{
-			Command: command,
-		},
-		status: 0,
-	}
-	rf.newLogCh <- logFuture
-	for logFuture.getStatus() == 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if logFuture.getStatus() == ERR_NOT_LEADER {
+	if !rf.isLeader() {
 		return -1, -1, false
 	}
-	return int(logFuture.logEntry.Index), int(logFuture.logEntry.Term), true
+	rf.newLogMu.Lock()
+	defer rf.newLogMu.Unlock()
+
+	logEntry := &LogEntry{
+		Command: command,
+		Index:   rf.getLastLogIndex() + 1,
+		Term:    rf.getCurrentTerm(),
+	}
+
+	rf.log.appendOne(logEntry)
+	DPrintf("[%v]Append New Log, LastLogIdx:%d, LogLen:%d", rf.getServerDetail(), logEntry.Index, rf.log.getLen())
+
+	rf.setLastLog(logEntry.Index, logEntry.Term)
+	rf.persist()
+
+	rf.commitment.setMatchIdx(int(rf.me), logEntry.Index)
+	asyncNotifyCh(rf.newLogCh)
+	return int(logEntry.Index), int(logEntry.Term), true
 }
 
 func (rf *Raft) buildAppendEntriesArgs(req *AppendEntriesRequest, s *replicationState, lastIdx int32) {
+	DPrintf("[%v]Build AppendEntry For %d, NextIndex:%d",
+		rf.getServerDetail(), s.id, s.nextIndex)
 	req.Leader = s.leaderId
 	req.Term = s.currentTerm
 	req.LeaderCommit = rf.commitment.getCommitIdx()
@@ -173,9 +182,6 @@ func (rf *Raft) buildAppendEntriesArgs(req *AppendEntriesRequest, s *replication
 
 	req.PrevLogIndex, req.PrevLogTerm = prevLogIdx, prevLogTerm
 	req.Entries = rf.log.getRange(s.nextIndex, lastIdx)
-
-	DPrintf("[%v]Build AppendEntry For %d, NextIndex:%d",
-		rf.getServerDetail(), s.id, s.nextIndex)
 }
 
 func (rf *Raft) applyLog() {
@@ -218,9 +224,9 @@ func (rf *Raft) sendHeartbeat(s *replicationState) {
 	DPrintf("[%v]Start Send Heartbeat to %d", rf.getServerDetail(), s.id)
 	defer DPrintf("[%v]Stop Send Heartbeat to %d", rf.getServerDetail(), s.id)
 
-	for rf.isLeader() {
+	for {
 		select {
-		case <-rf.shutdownCh:
+		case <-s.stopChan:
 			return
 		case <-time.After(time.Millisecond * 100):
 			DPrintf("[%v]Send Heartbeat to %d", rf.getServerDetail(), s.id)
@@ -238,7 +244,6 @@ func (rf *Raft) sendHeartbeat(s *replicationState) {
 
 func (rf *Raft) handleAppendEntriesRPC(req *AppendEntriesRequest, res *AppendEntriesResponse) {
 	DPrintf("[%v]Start Handle AppendEntries RPC:%v, logLen:%d", rf.getServerDetail(), req, rf.log.getLen())
-	DPrintf("[%v]Start Handle AppendEntries RPC:%v", rf.getServerDetail(), req)
 	myTerm := rf.getCurrentTerm()
 	res.Success, res.Term = false, myTerm
 	if req.Term < myTerm {
@@ -253,24 +258,9 @@ func (rf *Raft) handleAppendEntriesRPC(req *AppendEntriesRequest, res *AppendEnt
 		rf.persist()
 	}
 
+	lastLogIdx, lastLogTerm := rf.getLastLog()
 	// 如果Log中没有req.PrevLogIndex的对应项,就返回错误
 	if req.PrevLogIndex > 0 {
-		/*
-			需要考虑req.PrevLogIndex < rf.snapshot.LastIncludeIndex的情况吗?
-			什么情况下会出现这种情况?
-			  当旧Leader断线重连，此时已经有了新的Leader, 生成了更新的snapshot,
-			  但旧Leader还存有待发送的日志, 就会尝试向Follower发送,
-			  但旧Leader的Term肯定小于最新Term,在第一个if处就会被淘汰
-			所以不会出现上述情况, 下面的Assert就是进行判断的
-		*/
-		lastIncludedIdx := rf.snapshot.lastIncludeIndex()
-		if lastIncludedIdx != -1 {
-			Assert(req.PrevLogIndex >= lastIncludedIdx,
-				fmt.Sprintf("req.PrevLogIndex:%d < rf.snapshot.LastIncludedIndex:%d",
-					req.PrevLogIndex, lastIncludedIdx))
-		}
-
-		lastLogIdx, lastLogTerm := rf.getLastLog()
 		var prevLogTerm int32
 		if req.PrevLogIndex == lastLogIdx {
 			prevLogTerm = lastLogTerm
@@ -280,7 +270,7 @@ func (rf *Raft) handleAppendEntriesRPC(req *AppendEntriesRequest, res *AppendEnt
 				// 没找到prevLogIdx对应的日志
 				// 即req.PrevLogIndex > rf.lastLogIndex: 发来的日志太新
 				res.XIndex, res.XTerm = -1, -1
-				res.XLen = rf.getLastLogIndex() + 1
+				res.XLen = lastLogIdx + 1
 				return
 			}
 			prevLogTerm = logEntry.Term
@@ -288,7 +278,6 @@ func (rf *Raft) handleAppendEntriesRPC(req *AppendEntriesRequest, res *AppendEnt
 
 		// 日志不匹配, 返回属于冲突Term的最早LogEntry的index
 		if req.PrevLogTerm != prevLogTerm {
-			//rf.logMu.RLock()
 			prevLogIdx := req.PrevLogIndex
 			var log *LogEntry
 			for {
@@ -300,14 +289,13 @@ func (rf *Raft) handleAppendEntriesRPC(req *AppendEntriesRequest, res *AppendEnt
 				prevLogIdx--
 			}
 			res.XIndex, res.XTerm = log.Index, prevLogTerm
-			//rf.logMu.RUnlock()
 			DPrintf("Log Not Match")
 			return
 		}
 	}
 
 	if len(req.Entries) != 0 {
-		if req.PrevLogIndex != rf.getLastLogIndex() {
+		if req.PrevLogIndex != lastLogIdx {
 			// 可能存在日志冲突, 找到并截断
 			i, j := req.PrevLogIndex+1, 0
 			for {
@@ -320,34 +308,32 @@ func (rf *Raft) handleAppendEntriesRPC(req *AppendEntriesRequest, res *AppendEnt
 				}
 				i, j = i+1, j+1
 			}
-			// 截断args.Entries
 			req.Entries = req.Entries[j:]
 		}
 
-		Assert(len(req.Entries) != 0, "Entry Shouldn't Be Empty")
-		rf.log.appendSlice(req.Entries)
-
-		lastLog := req.Entries[len(req.Entries)-1]
-		rf.setLastLog(lastLog.Index, lastLog.Term)
-
-		DPrintf("[%v]Append %d Log, LastLogIndex:%d, logLen:%d",
-			rf.getServerDetail(), len(req.Entries),
-			rf.getLastLogIndex(), rf.log.getLen())
-		rf.persist()
+		if len(req.Entries) != 0 {
+			rf.log.appendSlice(req.Entries)
+			lastLog := req.Entries[len(req.Entries)-1]
+			rf.setLastLog(lastLog.Index, lastLog.Term)
+			DPrintf("[%v]Append %d Log, LastLogIndex:%d, logLen:%d",
+				rf.getServerDetail(), len(req.Entries),
+				rf.getLastLogIndex(), rf.log.getLen())
+			rf.persist()
+		}
 	}
 
 	// 更新CommitIndex, 要Term相同才Apply日志(Follower同样要遵循)
 	newCommitIndex := min(req.LeaderCommit, rf.getLastLogIndex())
 	log := rf.log.getOne(newCommitIndex)
 	if newCommitIndex > rf.commitment.getCommitIdx() &&
-		log != nil && req.Term == log.Term {
+		rf.getCurrentTerm() == log.Term {
 		rf.commitment.setCommitIdx(newCommitIndex)
 		asyncNotifyCh(rf.commitment.commitCh)
 		DPrintf("[%v]Update CommitIndex To %d", rf.getServerDetail(), newCommitIndex)
 	}
 
 	res.Success = true
-	DPrintf("[%v]AppendEntries Success\n", rf.getServerDetail())
+	DPrintf("[%v]AppendEntries Success, logLen:%d\n", rf.getServerDetail(), rf.log.getLen())
 }
 
 func (rf *Raft) logDispatcher(s *replicationState) {
@@ -356,9 +342,9 @@ func (rf *Raft) logDispatcher(s *replicationState) {
 
 	rf.goFunc(func() { rf.sendHeartbeat(s) }, "sendHeartbeat")
 
-	for rf.isLeader() {
+	for {
 		select {
-		case <-rf.shutdownCh:
+		case <-s.stopChan:
 			return
 		case <-s.dispatchLogChan:
 			rf.sendLogToFollower(s, rf.getLastLogIndex())
@@ -369,24 +355,22 @@ func (rf *Raft) logDispatcher(s *replicationState) {
 func (rf *Raft) sendLogToFollower(s *replicationState, lastIdx int32) {
 	DPrintf("[%v]Sync Log With Follower %d", rf.getServerDetail(), s.id)
 	req := &AppendEntriesRequest{}
-	res := &AppendEntriesResponse{}
 	rf.buildAppendEntriesArgs(req, s, lastIdx)
 	if len(req.Entries) == 0 {
 		DPrintf("[%v]Stop Sync Log With %d, No Pending Log.", rf.getServerDetail(), s.id)
 	}
 
+	var res *AppendEntriesResponse
 	DPrintf("[%v]Send AppendEntries RPC:%v To Follower:%v\n", rf.getServerDetail(), req, s.id)
-	for rf.isLeader() {
-		select {
-		case <-rf.shutdownCh:
+	for {
+		if !rf.isLeader() || rf.killed() {
 			return
-		default:
 		}
+		res = &AppendEntriesResponse{}
 		if rf.sendRPC(s.id, req, res) {
 			break
 		}
 		DPrintf("[%v]Send AppendEntries RPC To %d Timeout", rf.getServerDetail(), s.id)
-		time.Sleep(50 * time.Millisecond)
 	}
 
 	if res.Success {
@@ -431,5 +415,6 @@ func (rf *Raft) sendLogToFollower(s *replicationState, lastIdx int32) {
 	}
 	DPrintf("[%v]AppendEntries RPC To %d Failed, Decrease NextIndex To %d And Re-Try\n",
 		rf.getServerDetail(), s.id, s.nextIndex)
+	asyncNotifyCh(s.dispatchLogChan)
 	return
 }

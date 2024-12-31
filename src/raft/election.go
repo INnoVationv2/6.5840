@@ -40,9 +40,12 @@ func (rf *Raft) handleRequestVoteRPC(req *RequestVoteRequest, res *RequestVoteRe
 		DPrintf("[%s]Candidate[%d]'s Term:%d < My Term:%d, Not Vote",
 			rf.getServerDetail(), req.CandidateId, req.Term, currentTerm)
 		return
-	} else if req.Term == currentTerm && rf.votedFor != -1 && rf.votedFor != req.CandidateId {
+	}
+	votedFor := rf.getVotedFor()
+	if req.Term == currentTerm &&
+		votedFor != -1 && votedFor != req.CandidateId {
 		DPrintf("[%s]Already Vote To %d In Term %d",
-			rf.getServerDetail(), rf.votedFor, currentTerm)
+			rf.getServerDetail(), votedFor, currentTerm)
 		return
 	}
 
@@ -59,7 +62,7 @@ func (rf *Raft) handleRequestVoteRPC(req *RequestVoteRequest, res *RequestVoteRe
 	if compareLog(req.LastLogIndex, req.LastLogTerm, lastLogIdx, lastLogTerm) {
 		// Vote，并重置选举超时器，防止冲突
 		res.VoteGranted = true
-		rf.votedFor = req.CandidateId
+		rf.setVotedFor(req.CandidateId)
 		rf.setLastContact()
 		persist = true
 		DPrintf("[%s]Vote To %d", rf.getServerDetail(), req.CandidateId)
@@ -76,7 +79,7 @@ func (rf *Raft) handleRequestVoteRPC(req *RequestVoteRequest, res *RequestVoteRe
 func (rf *Raft) electSelf() <-chan *voteResult {
 	newTerm := rf.getCurrentTerm() + 1
 	rf.setCurrentTerm(newTerm)
-	rf.votedFor = rf.me
+	rf.setVotedFor(rf.me)
 	rf.persist()
 
 	req := &RequestVoteRequest{

@@ -43,6 +43,7 @@ type Raft struct {
 	rpcCh       chan *RPC
 	lastContact int64
 
+	newLogMu sync.Mutex
 	statusMu sync.RWMutex
 	// Raft Election
 	role        int32
@@ -56,7 +57,7 @@ type Raft struct {
 	lastLogIdx  int32
 	lastLogTerm int32
 
-	newLogCh chan *LogFuture
+	newLogCh chan struct{}
 	applyCh  chan ApplyMsg
 
 	replState  []*replicationState
@@ -77,7 +78,7 @@ func (rf *Raft) run() {
 		default:
 		}
 
-		switch rf.role {
+		switch rf.getRole() {
 		case LEADER:
 			rf.runLeader()
 		case CANDIDATE:
@@ -176,11 +177,11 @@ func (rf *Raft) runLeader() {
 
 		// 为每个Peer创建一个replicationState
 		s := &replicationState{
-			id:          serverNo,
-			leaderId:    rf.me,
-			currentTerm: rf.getCurrentTerm(),
-			nextIndex:   rf.getLastLogIndex() + 1,
-			//stopChan:        make(chan struct{}, 1),
+			id:              serverNo,
+			leaderId:        rf.me,
+			currentTerm:     rf.getCurrentTerm(),
+			nextIndex:       rf.getLastLogIndex() + 1,
+			stopChan:        make(chan struct{}, 1),
 			dispatchLogChan: make(chan struct{}, 1), // Notify Thread Sync Log With Follower
 			commitment:      rf.commitment,
 		}
@@ -191,10 +192,10 @@ func (rf *Raft) runLeader() {
 
 	// 退出Leader状态时，关闭所有日志同步线程
 	defer func() {
-		//for _, repl := range rf.replState {
-		//	DPrintf("[%v]Close %d's Replication Chan", rf.getServerDetail(), repl.id)
-		//	close(repl.stopChan)
-		//}
+		for _, repl := range rf.replState {
+			DPrintf("[%v]Close %d's Replication Chan", rf.getServerDetail(), repl.id)
+			close(repl.stopChan)
+		}
 		rf.replState = nil
 		DPrintf("[%v]Stop Run Leader", rf.getServerDetail())
 	}()
@@ -203,20 +204,7 @@ func (rf *Raft) runLeader() {
 		select {
 		case <-rf.shutdownCh:
 			return
-		case logFuture := <-rf.newLogCh:
-			logEntry := logFuture.logEntry
-			logEntry.Index = rf.getLastLogIndex() + 1
-			logEntry.Term = rf.getCurrentTerm()
-			rf.log.appendOne(logEntry)
-			rf.setLastLog(logEntry.Index, logEntry.Term)
-			logFuture.setStatus(SUCCESS_APPEND_LOG)
-			rf.persist()
-
-			DPrintf("[%v]Append New Log, LastLogIdx:%d, LogLen:%d",
-				rf.getServerDetail(), logEntry.Index, rf.log.getLen())
-
-			rf.commitment.setMatchIdx(int(rf.me), logEntry.Index)
-
+		case <-rf.newLogCh:
 			for _, s := range rf.replState {
 				asyncNotifyCh(s.dispatchLogChan)
 			}
@@ -253,7 +241,7 @@ func (rf *Raft) persist() {
 
 	lastLogIdx, lastLogTerm := rf.getLastLog()
 	if e.Encode(rf.getCurrentTerm()) != nil ||
-		e.Encode(rf.votedFor) != nil ||
+		e.Encode(rf.getVotedFor()) != nil ||
 		e.Encode(lastLogIdx) != nil ||
 		e.Encode(lastLogTerm) != nil ||
 		e.Encode(rf.log.getAll()) != nil {
@@ -321,7 +309,7 @@ func (rf *Raft) turnToFollower(term int32, votedFor int32) {
 	rf.setRole(FOLLOWER)
 	if term > rf.getCurrentTerm() {
 		rf.setCurrentTerm(term)
-		rf.votedFor = votedFor
+		rf.setVotedFor(votedFor)
 	}
 }
 
@@ -344,7 +332,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister,
 		votedFor: -1,
 		log:      buildInMemoryLog(),
 		snapshot: &InMemorySnapshot{},
-		newLogCh: make(chan *LogFuture),
+		newLogCh: make(chan struct{}),
 	}
 
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
