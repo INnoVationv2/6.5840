@@ -29,8 +29,6 @@ const (
 	FOLLOWER
 )
 
-const ELECTION_TIMEOUT = 350 //350ms
-
 type Raft struct {
 	// Const Raft Status
 	peers       []*labrpc.ClientEnd
@@ -63,14 +61,14 @@ type Raft struct {
 	replState  []*replicationState
 	commitment *commitment
 
-	// For System Monitor Use
+	// For Dev Debug Use
 	threadGroup sync.WaitGroup
 	threadCnt   int32
 }
 
 func (rf *Raft) run() {
-	DPrintf("[%v]Raft Server Start", rf.getServerDetail())
-	defer DPrintf("[%v]Stop Run", rf.getServerDetail())
+	DPrintf("[%v]Start Raft Server", rf.getServerDetail())
+	defer DPrintf("[%v]Stop Raft Server", rf.getServerDetail())
 	for {
 		select {
 		case <-rf.shutdownCh:
@@ -94,6 +92,7 @@ func (rf *Raft) run() {
 //	1.处理RPC
 //	2.发送Commited Log到Tester
 //	3.检查是否选举超时
+const ELECTION_TIMEOUT = 350 //350ms
 func (rf *Raft) runFollower() {
 	DPrintf("[%v]Run Follower", rf.getServerDetail())
 	defer DPrintf("[%v]Stop Run Follower", rf.getServerDetail())
@@ -136,7 +135,7 @@ func (rf *Raft) runCandidate() {
 			rf.handleRPC(rpc)
 		case vote := <-voteCh:
 			if vote.Term > rf.currentTerm {
-				DPrintf("[%v]Newer Term[%d] discovered, Turn to follower",
+				DPrintf("[%v]Newer Term[%d] Discovered, Turn To Follower",
 					rf.getServerDetail(), vote.Term)
 				rf.setRole(FOLLOWER)
 				rf.setCurrentTerm(vote.Term)
@@ -168,6 +167,7 @@ func (rf *Raft) runCandidate() {
 func (rf *Raft) runLeader() {
 	DPrintf("[%v]Run Leader", rf.getServerDetail())
 
+	stepDown := make(chan struct{}, 1)
 	var replState []*replicationState
 	for serverNo := range rf.peers {
 		rf.commitment.setMatchIdx(serverNo, 0)
@@ -181,8 +181,9 @@ func (rf *Raft) runLeader() {
 			leaderId:        rf.me,
 			currentTerm:     rf.getCurrentTerm(),
 			nextIndex:       rf.getLastLogIndex() + 1,
-			stopChan:        make(chan struct{}, 1),
-			dispatchLogChan: make(chan struct{}, 1), // Notify Thread Sync Log With Follower
+			stopChan:        make(chan struct{}),
+			stepDown:        &stepDown,
+			dispatchLogChan: make(chan struct{}, 1), // Notify Thread Start Sync Log With Follower
 			commitment:      rf.commitment,
 		}
 		replState = append(replState, s)
@@ -204,6 +205,8 @@ func (rf *Raft) runLeader() {
 		select {
 		case <-rf.shutdownCh:
 			return
+		case <-stepDown:
+			return
 		case <-rf.newLogCh:
 			for _, s := range rf.replState {
 				asyncNotifyCh(s.dispatchLogChan)
@@ -223,6 +226,8 @@ func (rf *Raft) handleRPC(rpc *RPC) {
 		rf.handleRequestVoteRPC(args.(*RequestVoteRequest), reply.(*RequestVoteResponse))
 	case *AppendEntriesRequest:
 		rf.handleAppendEntriesRPC(args.(*AppendEntriesRequest), reply.(*AppendEntriesResponse))
+	case *InstallSnapshotRequest:
+		rf.handleSnapshotRPC(args.(*InstallSnapshotRequest), reply.(*InstallSnapshotResponse))
 	}
 	asyncNotifyCh(rpc.replyChan)
 }
@@ -249,12 +254,13 @@ func (rf *Raft) persist() {
 	}
 
 	var snapshot []byte
-	if rf.snapshot != nil {
-		if e.Encode(int(rf.snapshot.lastIncludeIndex())) != nil ||
-			e.Encode(int(rf.snapshot.lastIncludeTerm())) != nil {
+	if rf.snapshot.available() {
+		lastIncludedIdx, lastIncludedTerm, data := rf.snapshot.getSnapshot()
+		if e.Encode(int(lastIncludedIdx)) != nil ||
+			e.Encode(int(lastIncludedTerm)) != nil {
 			log.Fatalf("[%v]Encode Raft State Failed", rf.getServerDetail())
 		}
-		snapshot = rf.snapshot.data()
+		snapshot = data
 	}
 
 	rf.persister.Save(buf.Bytes(), snapshot)
@@ -268,6 +274,7 @@ func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
 	r := bytes.NewBuffer(raftState)
 	d := labgob.NewDecoder(r)
 
+	// Restore Log
 	var logs []LogEntry
 	if d.Decode(&rf.currentTerm) != nil ||
 		d.Decode(&rf.votedFor) != nil ||
@@ -278,6 +285,7 @@ func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
 	}
 	rf.log.setLog(logs)
 
+	// Restore Snapshot
 	if snapshot != nil && len(snapshot) > 0 {
 		var lastIncludedIndex int32
 		var lastIncludedTerm int32
@@ -287,8 +295,7 @@ func (rf *Raft) readPersist(raftState []byte, snapshot []byte) {
 		rf.snapshot.setSnapshot(lastIncludedIndex, lastIncludedTerm, snapshot)
 	}
 
-	DPrintf("[%v]Restore Raft, Term:%d VoteFor:%d",
-		rf.getServerDetail(), rf.currentTerm, rf.votedFor)
+	DPrintf("[%v]Restore Raft, Term:%d VoteFor:%d", rf.getServerDetail(), rf.currentTerm, rf.votedFor)
 }
 
 func (rf *Raft) Kill() {
@@ -321,7 +328,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister,
 		applyCh:    applyCh,
 		peers:      peers,
 		persister:  persister,
-		shutdownCh: make(chan struct{}, 1),
+		shutdownCh: make(chan struct{}),
 		rpcCh:      make(chan *RPC),
 		commitment: &commitment{
 			matchIndex: make([]int32, len(peers)),
@@ -330,9 +337,9 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister,
 		majority: int32(len(peers) / 2),
 		role:     FOLLOWER,
 		votedFor: -1,
-		log:      buildInMemoryLog(),
+		log:      buildInMemoryLog(me),
 		snapshot: &InMemorySnapshot{},
-		newLogCh: make(chan struct{}),
+		newLogCh: make(chan struct{}, 1),
 	}
 
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())

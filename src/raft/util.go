@@ -1,8 +1,8 @@
 package raft
 
 import (
+	"6.5840/logger"
 	"fmt"
-	"log"
 	"math/rand"
 	"runtime"
 	"time"
@@ -13,7 +13,7 @@ const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
-		log.Printf(format, a...)
+		logger.Debug(format, a...)
 	}
 }
 
@@ -95,14 +95,14 @@ func asyncNotifyCh(ch chan struct{}) {
 }
 
 func (rf *Raft) goFunc(function func(), funcName string) {
-	rf.threadGroup.Add(1)
-	rf.incThreadCnt()
-	//DPrintf("[%v]Func %s Start, Cnt:%d", rf.getServerDetail(), funcName, rf.getThreadCnt())
+	//rf.threadGroup.Add(1)
+	//atomic.AddInt32(&rf.threadCnt, 1)
+	//fmt.Printf("[%v]Func %s Start, Cnt:%d\n", rf.getServerDetail(), funcName, atomic.LoadInt32(&rf.threadCnt))
 	go func() {
 		function()
-		rf.threadGroup.Done()
-		rf.decThreadCnt()
-		//DPrintf("[%v]Func %s Finish, Cnt:%d", rf.getServerDetail(), funcName, rf.getThreadCnt())
+		//rf.threadGroup.Done()
+		//atomic.AddInt32(&rf.threadCnt, -1)
+		//fmt.Printf("[%v]Func %s Finish, Cnt:%d\n", rf.getServerDetail(), funcName, atomic.LoadInt32(&rf.threadCnt))
 	}()
 }
 
