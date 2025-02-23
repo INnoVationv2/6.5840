@@ -17,11 +17,11 @@ func (rf *Raft) sendRPC(target int, req interface{}, res interface{}) bool {
 		rpcCh <- ok
 	}, "SendRPC")
 
-	// 300ms没有收到结果就返回
+	// 200ms没有收到结果就返回
 	select {
 	case ok := <-rpcCh:
 		return ok
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 		return false
 	}
 }

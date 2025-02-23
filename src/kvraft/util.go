@@ -1,15 +1,15 @@
 package kvraft
 
 import (
+	"6.5840/logger"
 	"fmt"
-	"log"
 )
 
 const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
-		log.Printf(format, a...)
+		logger.Debug(format, a...)
 	}
 	return
 }

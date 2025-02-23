@@ -27,51 +27,51 @@ func (ck *Clerk) getCommandId() int32 {
 }
 
 func (ck *Clerk) Get(key string) string {
-	args := ck.buildGetArg(key)
-	reply := &GetReply{}
+	args, reply := ck.buildGetArg(key), &Reply{}
 	ck.CallServer("Get", args, reply)
 	DPrintf("[Client]Get RPC Complete {%d %v}", args.CommandId, key)
 	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend("Put", key, value)
 }
 
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend("Append", key, value)
 }
 
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := ck.buildPutAppendArg(key, value)
-	reply := &PutAppendReply{}
+func (ck *Clerk) PutAppend(op string, key string, value string) {
+	args, reply := ck.buildPutAppendArg(key, value), &Reply{}
 	ck.CallServer(op, args, reply)
 	DPrintf("[Client]%s RPC Complete {%d %v->%v}", op, args.CommandId, key, value)
 }
 
-func (ck *Clerk) CallServer(op string, args Args, reply Reply) {
+func (ck *Clerk) CallServer(op string, arg *Arg, reply *Reply) {
 	leaderId := atomic.LoadInt32(&ck.leaderId)
 	serverNo := leaderId
 	for {
-		DPrintf("[Client]Send %s RPC %v To KvServer %d", op, args, serverNo)
-		ok := ck.servers[serverNo].Call("KVServer."+op, args, reply)
-		if ok && reply.getErr() == OK {
-			go ck.Report(serverNo, args)
+		DPrintf("[Client]Send %s RPC %v To KvServer %d", op, arg, serverNo)
+		ok := ck.servers[serverNo].Call("KVServer."+op, arg, reply)
+		if ok && reply.Status == OK {
+			go ck.Report(serverNo, arg)
 			atomic.StoreInt32(&ck.leaderId, serverNo)
 			DPrintf("[Client]Update LeaderId to %d", serverNo)
 			return
 		}
-		DPrintf("[Client]Send %s RPC %v To KvServer %d Failed:%v, Retring...", op, args, serverNo, reply.getErr())
-		serverNo = (serverNo + 1) % int32(len(ck.servers))
-		if serverNo == leaderId {
-			time.Sleep(time.Millisecond * 400)
+		DPrintf("[Client]Send %s RPC %v To KvServer %d Failed:%v, Retring...", op, arg, serverNo, reply.Status)
+		if !ok || reply.Status == ErrorNotLeader {
+			serverNo = (serverNo + 1) % int32(len(ck.servers))
+			if serverNo == leaderId {
+				time.Sleep(time.Millisecond * 10)
+			}
 		}
 	}
 }
 
-func (ck *Clerk) Report(serverNo int32, arg Args) {
-	cmdId := arg.GetCommandId()
-	args, reply := GetArgs{ClientId: ck.id, CommandId: cmdId}, GetReply{}
+func (ck *Clerk) Report(serverNo int32, arg *Arg) {
+	cmdId := arg.CommandId
+	args, reply := Arg{ClientId: ck.id, CommandId: cmdId}, Reply{}
 	DPrintf("[Client]Command %d Is Complete, Send Report RPC To Server %d", cmdId, serverNo)
 	for ok := false; !ok; {
 		ok = ck.servers[serverNo].Call("KVServer.Report", &args, &reply)
