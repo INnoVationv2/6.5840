@@ -27,29 +27,28 @@ func (ck *Clerk) getCommandId() int32 {
 }
 
 func (ck *Clerk) Get(key string) string {
-	args, reply := ck.buildGetArg(key), &Reply{}
-	ck.CallServer("Get", args, reply)
-	DPrintf("[Client]Get RPC Complete {%d %v}", args.CommandId, key)
+	args := ck.buildGetArg(key)
+	reply := ck.CallServer("Get", args)
+	DPrintf("[Client]Command Get Complete {%d %v}", args.CommandId, key)
 	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend("Put", key, value)
+	args := ck.buildPutAppendArg(key, value)
+	ck.CallServer("Put", args)
+	DPrintf("[Client]Command Put Complete {%d %v->%v}", args.CommandId, key, value)
 }
 
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend("Append", key, value)
+	args := ck.buildPutAppendArg(key, value)
+	ck.CallServer("Append", args)
+	DPrintf("[Client]Command Append Complete {%d %v->%v}", args.CommandId, key, value)
 }
 
-func (ck *Clerk) PutAppend(op string, key string, value string) {
-	args, reply := ck.buildPutAppendArg(key, value), &Reply{}
-	ck.CallServer(op, args, reply)
-	DPrintf("[Client]%s RPC Complete {%d %v->%v}", op, args.CommandId, key, value)
-}
-
-func (ck *Clerk) CallServer(op string, arg *Arg, reply *Reply) {
+func (ck *Clerk) CallServer(op string, arg *Arg) (reply *Reply) {
 	leaderId := atomic.LoadInt32(&ck.leaderId)
 	serverNo := leaderId
+	reply = &Reply{Status: FAILED}
 	for {
 		DPrintf("[Client]Send %s RPC %v To KvServer %d", op, arg, serverNo)
 		ok := ck.servers[serverNo].Call("KVServer."+op, arg, reply)

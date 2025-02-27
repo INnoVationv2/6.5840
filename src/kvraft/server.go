@@ -5,55 +5,10 @@ import (
 	"6.5840/labrpc"
 	"6.5840/raft"
 	"bytes"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 )
-
-type CmdType int
-
-const (
-	GET CmdType = iota
-	PUT
-	APPEND
-)
-
-func (c CmdType) String() string {
-	switch c {
-	case GET:
-		return "GET"
-	case PUT:
-		return "PUT"
-	case APPEND:
-		return "APPEND"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-type Command struct {
-	ClientId int64
-	CmdId    int32
-	Type     CmdType
-	Key      string
-	Value    string
-	Status   int32
-}
-
-func (cmd *Command) String() string {
-	return fmt.Sprintf("{ClientId:%d,CmdId:%d,Type:%v,Key:%v,Value:%v}", cmd.ClientId, cmd.CmdId, cmd.Type, cmd.Key, cmd.Value)
-}
-
-func buildCommand(opType CmdType, arg *Arg) *Command {
-	return &Command{
-		ClientId: arg.ClientId,
-		CmdId:    arg.CommandId,
-		Type:     opType,
-		Status:   PENDING,
-		Key:      arg.Key,
-		Value:    arg.Value}
-}
 
 type KVServer struct {
 	me         int
@@ -72,7 +27,7 @@ type KVServer struct {
 	history map[int64]map[int32]string
 	// 用于记录每个Client已执行的最大的Command Index
 	matchIndex map[int64]int32
-	submitCmd  map[int64]map[int32]Result
+	submitCmd  map[int64]map[int32]*Reply
 
 	// 用于记录已经执行的最大的LogEntry的Index
 	appliedLogIdx int32
@@ -101,40 +56,32 @@ func (kv *KVServer) submitCommand(op CmdType, arg *Arg, reply *Reply) {
 		reply.Value = val
 		return
 	}
-
 	cmd := buildCommand(op, arg)
-	kv.submitCmdToRaft(cmd)
-	if reply.Status = cmd.Status; reply.Status != OK {
+
+	kv.addSubmitCmd(cmd, reply)
+	defer kv.deleteSubmitCmd(cmd)
+
+	kv.submitCmdToRaft(cmd, reply)
+	if reply.Status != OK {
 		DPrintf("[%v]Command %v failed:%v", kv.getServerDetail(), cmd, reply.Status)
-	} else if op == GET {
-		reply.Value = cmd.Value
+		return
 	}
 	DPrintf("[%v]%s Complete %v->%v", kv.getServerDetail(), op, arg, reply)
 }
 
-func (kv *KVServer) submitCmdToRaft(cmd *Command) {
+func (kv *KVServer) submitCmdToRaft(cmd *Command, reply *Reply) {
 	DPrintf("[%v]Submit Command %v To Raft", kv.getServerDetail(), cmd)
 	defer DPrintf("[%v]Submit Command %v To Raft Complete", kv.getServerDetail(), cmd)
-
-	// 用于Command执行完成时进行通知
-	res := Result{Status: PENDING}
-	kv.addSubmitCmd(cmd, res)
 
 	cmdIdx, raftTerm, isLeader := kv.rf.Start(*cmd)
 	if !isLeader {
 		DPrintf("[%v]Not Leader", kv.getServerDetail())
-		cmd.Status = ErrorNotLeader
+		reply.Status = ErrorNotLeader
 		return
 	}
 	DPrintf("[%v]Success Submit Command %v To Raft, CmdIdx:%d", kv.getServerDetail(), cmd, cmdIdx)
 
 	for !kv.killed() && kv.getRaftTerm() <= raftTerm && kv.getAppliedLogIdx() < int32(cmdIdx) {
-	}
-
-	cmd.Status = FAILED
-	if res.Status == OK {
-		cmd.Status = OK
-		cmd.Value = res.Value
 	}
 }
 
@@ -165,7 +112,7 @@ func (kv *KVServer) applyCommand(cmd *Command) {
 	DPrintf("[%v]Apply %v ", kv.getServerDetail(), cmd)
 	defer DPrintf("[%v]Apply %v Complete", kv.getServerDetail(), cmd)
 
-	if cmd.Type != GET && kv.getMatchIndex(cmd.ClientId) < cmd.CmdId {
+	if cmd.Type != GET && kv.matchIndex[cmd.ClientId] < cmd.CmdId {
 		switch cmd.Type {
 		case PUT:
 			kv.db.set(cmd.Key, cmd.Value)
@@ -188,10 +135,9 @@ func (kv *KVServer) applyCommand(cmd *Command) {
 	if cmd.CmdId > kv.matchIndex[cmd.ClientId] {
 		kv.matchIndex[cmd.ClientId] = cmd.CmdId
 	}
-	if res, ok := kv.submitCmd[cmd.ClientId][cmd.CmdId]; ok {
-		res.Status = OK
-		res.Value = value
-		delete(kv.submitCmd[cmd.ClientId], cmd.CmdId)
+	if reply, ok := kv.submitCmd[cmd.ClientId][cmd.CmdId]; ok {
+		reply.Status = OK
+		reply.Value = value
 	}
 }
 
@@ -204,6 +150,7 @@ func (kv *KVServer) readSnapshot(lastIncludeIndex int, snapshot []byte) {
 	kv.setAppliedLogIdx(int32(lastIncludeIndex))
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
+
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	db := make(map[string]string)
@@ -271,7 +218,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.db = buildInMemoryDB()
 	kv.history = make(map[int64]map[int32]string)
 	kv.matchIndex = make(map[int64]int32)
-	kv.submitCmd = make(map[int64]map[int32]Result)
+	kv.submitCmd = make(map[int64]map[int32]*Reply)
 	kv.appliedLogIdx = 0
 
 	go kv.ticker()
