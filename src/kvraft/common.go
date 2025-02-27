@@ -3,9 +3,8 @@ package kvraft
 import "fmt"
 
 const (
-	PENDING = int32(iota)
+	FAILED = int32(iota)
 	OK
-	FAILED
 	ErrorNotLeader
 )
 
@@ -55,9 +54,4 @@ type DB interface {
 	append(key, val string) string
 	export() map[string]string
 	setDB(val map[string]string)
-}
-
-type Result struct {
-	Status int32
-	Value  string
 }

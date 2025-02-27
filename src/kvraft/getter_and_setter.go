@@ -53,19 +53,27 @@ func (kv *KVServer) deleteHistory(clientId int64, cmdId int32) {
 	delete(kv.history[clientId], cmdId)
 }
 
-func (kv *KVServer) addSubmitCmd(cmd *Command, result Result) {
+func (kv *KVServer) addSubmitCmd(cmd *Command, result *Reply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
 	clientId, cmdId := cmd.ClientId, cmd.CmdId
 	if _, ok := kv.submitCmd[clientId]; !ok {
-		kv.submitCmd[clientId] = make(map[int32]Result)
+		kv.submitCmd[clientId] = make(map[int32]*Reply)
 	}
 	kv.submitCmd[clientId][cmdId] = result
 }
 
-func (kv *KVServer) getSubmitCmd(cmd *Command) Result {
+func (kv *KVServer) getSubmitCmd(cmd *Command) *Reply {
 	kv.mu.RLock()
 	defer kv.mu.RUnlock()
+
 	return kv.submitCmd[cmd.ClientId][cmd.CmdId]
+}
+
+func (kv *KVServer) deleteSubmitCmd(cmd *Command) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	delete(kv.submitCmd[cmd.ClientId], cmd.CmdId)
 }
