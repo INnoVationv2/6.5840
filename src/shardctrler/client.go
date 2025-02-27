@@ -33,79 +33,80 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-func (ck *Clerk) Query(num int) Config {
-	args := &QueryArgs{
+func (ck *Clerk) Query(idx int) Config {
+	args := &Args{
 		ClientId:  ck.id,
 		CommandId: ck.getCmdId(),
-		Num:       num,
+		Type:      QUERY,
+		ConfigIdx: idx,
 	}
-	reply := &QueryReply{}
-	ck.callServer("Query", args, reply)
-	DPrintf("[Client]Query RPC Complete %v:%v", args, reply)
+	DPrintf("[Client]New Command Query %v\n", args)
+	reply := ck.callServer("Query", args)
+	DPrintf("[Client]Command Query Complete %v:%v", args, reply)
 	return reply.Config
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
-	args := &JoinArgs{
+	args := &Args{
 		ClientId:  ck.id,
 		CommandId: ck.getCmdId(),
-		Servers:   make(map[int][]string),
+		Type:      JOIN,
+		Servers:   servers,
 	}
-	for key, val := range servers {
-		args.Servers[key] = make([]string, len(val))
-		copy(args.Servers[key], val)
-	}
-	reply := &JoinReply{}
-	ck.callServer("Join", args, reply)
-	DPrintf("[Client]Join RPC Complete %v", args)
+	DPrintf("[Client]New Command Join %v\n", args)
+	ck.callServer("Join", args)
+	DPrintf("[Client]Command Join Complete %v", args)
 }
 
 func (ck *Clerk) Leave(gids []int) {
-	args := &LeaveArgs{
+	args := &Args{
 		ClientId:  ck.id,
 		CommandId: ck.getCmdId(),
+		Type:      LEAVE,
 		GIDs:      gids,
 	}
-	reply := &LeaveReply{}
-	ck.callServer("Leave", args, reply)
-	DPrintf("[Client]Leave RPC Complete %v", args)
+	DPrintf("[Client]New Command Leave %v\n", args)
+	ck.callServer("Leave", args)
+	DPrintf("[Client]Command Leave Complete %v", args)
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
-	args := &MoveArgs{
+	args := &Args{
 		ClientId:  ck.id,
 		CommandId: ck.getCmdId(),
+		Type:      MOVE,
 		Shard:     shard,
 		GID:       gid,
 	}
-	reply := &MoveReply{}
-	ck.callServer("Move", args, reply)
-	DPrintf("[Client]Move RPC Complete %v", args)
+	DPrintf("[Client]New Command Move %v\n", args)
+	ck.callServer("Move", args)
+	DPrintf("[Client]Command Move Complete %v", args)
 }
 
-func (ck *Clerk) callServer(op string, args Args, reply Reply) {
+func (ck *Clerk) callServer(op string, args *Args) (reply *Reply) {
 	leaderId := ck.leaderId
 	serverNo := leaderId
+	reply = &Reply{Status: Failed}
 	for {
 		DPrintf("[Client]Send %s RPC %v To ShardCtrler %d", op, args, serverNo)
 		ok := ck.servers[serverNo].Call("ShardCtrler."+op, args, reply)
-		if ok && reply.getErr() == OK {
+		if ok && reply.Status == OK {
 			go ck.Report(serverNo, args)
 			atomic.StoreInt32(&ck.leaderId, serverNo)
 			return
 		}
-		serverNo = (serverNo + 1) % int32(len(ck.servers))
-		// 试了一圈，没有Leader，休息一段时间再试
-		if serverNo == leaderId {
-			time.Sleep(300 * time.Millisecond)
+		if !ok || reply.Status == ErrNotLeader {
+			serverNo = (serverNo + 1) % int32(len(ck.servers))
+			if serverNo == leaderId {
+				time.Sleep(time.Millisecond * 10)
+			}
 		}
 	}
 }
 
-func (ck *Clerk) Report(serverNo int32, arg Args) {
-	cmdId := arg.GetCommandId()
-	args, reply := QueryArgs{ClientId: ck.id, CommandId: cmdId}, QueryReply{}
-	DPrintf("[Client]Command %d Is Complete, Send Report RPC To ShardCtrler %d", cmdId, serverNo)
+func (ck *Clerk) Report(serverNo int32, arg *Args) {
+	args, reply := Args{ClientId: ck.id, CommandId: arg.CommandId}, Reply{}
+	DPrintf("[Client]Command %d Is Complete, Send Report RPC To ShardCtrler %d", arg.CommandId, serverNo)
 	for ok := false; !ok; {
 		ok = ck.servers[serverNo].Call("ShardCtrler.Report", &args, &reply)
 	}

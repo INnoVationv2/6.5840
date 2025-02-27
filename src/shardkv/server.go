@@ -6,43 +6,14 @@ import (
 	"6.5840/raft"
 	"6.5840/shardctrler"
 	"bytes"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const (
-	GET = iota
-	PUT
-	APPEND
-)
-
-type Command struct {
-	ClientId int64
-	CmdId    int32
-
-	Type   int
-	Key    string
-	Value  string
-	Status Err
-}
-
-func (cmd *Command) String() string {
-	return fmt.Sprintf("{%s %s->%s}", cmdTypeToStr(cmd.Type), cmd.Key, cmd.Value)
-}
-
-func buildCommand(opType int, clientId int64, cmdId int32, str ...string) *Command {
-	cmd := Command{ClientId: clientId, CmdId: cmdId, Type: opType, Key: str[0], Status: OK}
-	if opType == PUT || opType == APPEND {
-		cmd.Value = str[1]
-	}
-	return &cmd
-}
-
 type ShardKV struct {
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	me           int
 	rf           *raft.Raft
 	applyCh      chan raft.ApplyMsg
@@ -50,24 +21,19 @@ type ShardKV struct {
 	gid          int
 	maxraftstate int // snapshot if log grows this big
 
-	ctrlers          []*labrpc.ClientEnd
-	shardCtrlerClerk *shardctrler.Clerk
-	shardConf        shardctrler.Config
+	ctrlers     []*labrpc.ClientEnd
+	shardCtrler *shardctrler.Clerk
+	shardConf   *shardctrler.Config
 
 	raftPersister *raft.Persister
 
-	db map[string]string
+	db DB
 
-	dead   int32
-	killCh chan bool
-
-	raftTerm int32
-	// Client前一个提交的Command
-	prevCmd map[int64]*Command
+	dead       int32
+	shutdownCh chan struct{}
 	// Client已提交的Command
-	submitCmd map[int]*Command
-
-	// 用于记录已经执行的最大的LogEntry的Index
+	submitCmd map[int64]map[int32]*Reply
+	// 记录已经执行的最大的LogEntry的Index
 	appliedLogIdx int32
 	// Client已执行过的最大Command编号
 	matchIndex map[int64]int32
@@ -81,189 +47,124 @@ func (kv *ShardKV) checkIfCommandAlreadyExecuted(clientId int64, commandId int32
 	return false
 }
 
-func (kv *ShardKV) updateShardConf() {
-	kv.shardConf = kv.shardCtrlerClerk.Query(-1)
-}
-
 func (kv *ShardKV) checkShard(key string) bool {
-	kv.updateShardConf()
+	for kv.shardConf == nil {
+		time.Sleep(time.Millisecond * 10)
+	}
 	shard := key2shard(key)
-	if kv.shardConf.Shards[shard] == kv.gid {
-		return true
-	}
-	return false
+	return kv.shardConf.Shards[shard] == kv.gid
 }
 
-func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	DPrintf("[%v]Received Get RPC:%v", kv.getServerDetail(), args)
-	clientId, cmdId := args.ClientId, args.CommandId
-
-	// 如果是重复命令，直接返回之前的结果
-	kv.mu.Lock()
-	if !kv.checkShard(args.Key) {
-		reply.Err = ErrWrongGroup
-		kv.mu.Unlock()
-		return
-	}
-	if kv.checkIfCommandAlreadyExecuted(clientId, cmdId) {
-		DPrintf("[%s]Dupliacte Get Reuqest %v", kv.getServerDetail(), args)
-		reply.Err = OK
-		reply.Value = kv.history[clientId][cmdId]
-		kv.mu.Unlock()
-		return
-	}
-	kv.mu.Unlock()
-
-	cmd := buildCommand(GET, clientId, cmdId, args.Key)
-	kv.submitCommand(cmd)
-	reply.Err = cmd.Status
-	if reply.Err != OK {
-		DPrintf("[%s]Submit Command %v Failed:%v", kv.getServerDetail(), args, reply.Err)
-		return
-	}
-	reply.Value = cmd.Value
-	DPrintf("[%v]Get Complete Key:%s Result:%s", kv.getServerDetail(), cmd.Key, cmd.Value)
+func (kv *ShardKV) Get(arg *Args, reply *Reply) {
+	kv.submitCommand(Get, arg, reply)
 }
 
-func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	DPrintf("[%v]Received %s RPC:%v", kv.getServerDetail(), args.Op, args)
-	clientId, cmdId := args.ClientId, args.CommandId
-	kv.mu.Lock()
-	if !kv.checkShard(args.Key) {
-		reply.Err = ErrWrongGroup
-		kv.mu.Unlock()
-		return
-	}
-	if kv.checkIfCommandAlreadyExecuted(clientId, cmdId) {
-		DPrintf("[%s]Dupliacte %s Reuqest %v", kv.getServerDetail(), args.Op, args)
-		reply.Err = OK
-		kv.mu.Unlock()
-		return
-	}
-	kv.mu.Unlock()
-
-	var opType int
-	switch args.Op {
-	case "Put":
-		opType = PUT
-	case "Append":
-		opType = APPEND
-	}
-	cmd := buildCommand(opType, clientId, cmdId, args.Key, args.Value)
-	kv.submitCommand(cmd)
-	reply.Err = cmd.Status
-	if reply.Err != OK {
-		DPrintf("[%v]Command %v failed:%v", kv.getServerDetail(), cmd, reply.Err)
-		return
-	}
+func (kv *ShardKV) Put(args *Args, reply *Reply) {
+	kv.submitCommand(Put, args, reply)
 }
 
-func (kv *ShardKV) submitCommand(cmd *Command) {
-	DPrintf("[%v]SubmitCommand", kv.getServerDetail())
-	kv.mu.Lock()
-	cmdIdx, term, isLeader := kv.rf.Start(*cmd)
+func (kv *ShardKV) Append(args *Args, reply *Reply) {
+	kv.submitCommand(Append, args, reply)
+}
+
+func (kv *ShardKV) submitCommand(op CmdType, arg *Args, reply *Reply) {
+	DPrintf("[%v]Received %s RPC:%v", kv.getServerDetail(), op, arg)
+
+	if !kv.checkShard(arg.Key) {
+		DPrintf("Key %s Not Belong To KVServer %d", arg.Key, kv.gid)
+		reply.Status = ErrWrongGroup
+		return
+	}
+
+	clientId, cmdId := arg.ClientId, arg.CommandId
+	// 如果是重复请求，直接返回OK
+	if val, ok := kv.getHistory(clientId, cmdId); ok {
+		DPrintf("[%s]Dupliacte %s Reuqest %v", kv.getServerDetail(), op, arg)
+		reply.Status = OK
+		reply.Value = val
+		return
+	}
+	cmd := buildCommand(op, arg)
+
+	kv.addSubmitCmd(cmd, reply)
+	defer kv.deleteSubmitCmd(cmd)
+
+	kv.submitCmdToRaft(cmd, reply)
+	if reply.Status != OK {
+		DPrintf("[%v]Command %v failed:%v", kv.getServerDetail(), cmd, reply.Status)
+		return
+	}
+	DPrintf("[%v]%s Complete %v->%v", kv.getServerDetail(), op, arg, reply)
+}
+
+func (kv *ShardKV) submitCmdToRaft(cmd *Command, reply *Reply) {
+	DPrintf("[%v]Submit Command %v To Raft", kv.getServerDetail(), cmd)
+	defer DPrintf("[%v]Submit Command %v To Raft Complete", kv.getServerDetail(), cmd)
+
+	cmdIdx, raftTerm, isLeader := kv.rf.Start(*cmd)
 	if !isLeader {
-		cmd.Status = ErrWrongLeader
-		kv.mu.Unlock()
+		DPrintf("[%v]Not Leader", kv.getServerDetail())
+		reply.Status = ErrNotLeader
 		return
 	}
-	kv.setRaftTerm(int32(term))
-	kv.submitCmd[cmdIdx] = cmd
-	kv.mu.Unlock()
+	DPrintf("[%v]Success Submit Command %v To Raft, CmdIdx:%d", kv.getServerDetail(), cmd, cmdIdx)
 
-	DPrintf("[%s]Submit Command %v To Raft, Index:%d, Term:%d", kv.getServerDetail(), cmd, cmdIdx, term)
-	for !kv.killed() && kv.getAppliedLogIdx() < int32(cmdIdx) && kv.getRaftTerm() == int32(term) {
-	}
-
-	if cmd.Status == LogNotMatch {
-		DPrintf("[%s]Command %v Not Match, Need Re-Submit To KVServer", kv.getServerDetail(), cmd)
-	}
-
-	if kv.getRaftTerm() != int32(term) {
-		cmd.Status = TermChanged
-		DPrintf("[%s]Command %v Is Expired, SubmitTerm:%d, CurrentTerm:%d, Need Re-Submit To KVServer",
-			kv.getServerDetail(), cmd, term, kv.getRaftTerm())
-	}
-
-	if kv.killed() {
-		cmd.Status = Killed
+	for !kv.killed() && kv.getRaftTerm() <= raftTerm && kv.getAppliedLogIdx() < int32(cmdIdx) {
 	}
 }
 
 func (kv *ShardKV) ticker() {
-	DPrintf("[%s]Ticker Start", kv.getServerDetail())
+	DPrintf("[%s]Start KVServer.Ticker", kv.getServerDetail())
 	for {
 		select {
+		case <-kv.shutdownCh:
+			DPrintf("[%s]Stop KVServer.Ticker", kv.getServerDetail())
+			return
 		case msg := <-kv.applyCh:
-			kv.mu.Lock()
-			if msg.SnapshotValid {
+			if msg.CommandValid {
+				cmdIdx, cmd := int32(msg.CommandIndex), msg.Command.(Command)
+				DPrintf("[%s]Receive Command %v From Raft applyChan", kv.getServerDetail(), &cmd)
+				kv.applyCommand(&cmd)
+				kv.setAppliedLogIdx(cmdIdx)
+				kv.checkSnapshot()
+			} else {
 				DPrintf("[%s]Receive Snapshot From Raft applyChan, LastIncludeIdx:%d", kv.getServerDetail(), msg.SnapshotIndex)
 				kv.readSnapshot(msg.SnapshotIndex, msg.Snapshot)
 			}
-
-			if msg.CommandValid {
-				cmdIdx, cmd := msg.CommandIndex, msg.Command.(Command)
-				DPrintf("[%s]Receive %s Command %d:%v From Raft applyChan", kv.getServerDetail(), cmdTypeToStr(cmd.Type), cmdIdx, &cmd)
-				kv.applyCommand(cmdIdx, &cmd)
-				kv.setAppliedLogIdx(int32(cmdIdx))
-				kv.prevCmd[cmd.ClientId] = &cmd
-				kv.checkSnapshot()
-			}
-			kv.mu.Unlock()
-		case <-kv.killCh:
-			DPrintf("[%s]Sever Been Killed, Ticker End", kv.getServerDetail())
-			return
 		}
 	}
 }
 
-func (kv *ShardKV) applyCommand(cmdIdx int, cmd *Command) {
-	prevCmd, ok := kv.prevCmd[cmd.ClientId]
-	if !ok || !compareCommand(cmd, prevCmd) {
+func (kv *ShardKV) applyCommand(cmd *Command) {
+	DPrintf("[%v]Apply %v ", kv.getServerDetail(), cmd)
+	defer DPrintf("[%v]Apply %v Complete", kv.getServerDetail(), cmd)
+
+	if cmd.Type != Get && kv.getMatchIndex(cmd.ClientId) < cmd.CmdId {
 		switch cmd.Type {
-		case PUT:
-			kv.db[cmd.Key] = cmd.Value
-		case APPEND:
-			val, ok := kv.db[cmd.Key]
-			if !ok {
-				val = ""
-			}
-			kv.db[cmd.Key] = val + cmd.Value
-		case GET:
+		case Put:
+			kv.db.set(cmd.Key, cmd.Value)
+			DPrintf("[%v][ApplyCommand]Put %v->%v", kv.getServerDetail(), cmd, cmd.Value)
+		case Append:
+			value := kv.db.append(cmd.Key, cmd.Value)
+			DPrintf("[%v][ApplyCommand]Append %v->%v", kv.getServerDetail(), cmd, value)
 		}
 	}
 
-	cmd2, ok := kv.submitCmd[cmdIdx]
-	if !ok {
-		return
+	value := ""
+	if cmd.Type == Get {
+		value = kv.db.get(cmd.Key)
+		DPrintf("[%v][ApplyCommand]Get %v->%v", kv.getServerDetail(), cmd, value)
 	}
 
-	if !compareCommand(cmd, cmd2) {
-		DPrintf("[%v]Log At %d Not Match, Return", kv.getServerDetail(), cmdIdx)
-		cmd2.Status = LogNotMatch
-		return
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	kv.setHistory(cmd.ClientId, cmd.CmdId, value)
+	if cmd.CmdId > kv.matchIndex[cmd.ClientId] {
+		kv.matchIndex[cmd.ClientId] = cmd.CmdId
 	}
-	kv.updateState(cmd2)
-	delete(kv.submitCmd, cmdIdx)
-}
-
-func (kv *ShardKV) updateState(cmd *Command) {
-	clientId, cmdId := cmd.ClientId, cmd.CmdId
-
-	cmd.Status = OK
-	kv.matchIndex[clientId] = max(kv.matchIndex[clientId], cmdId)
-	DPrintf("[%v]Update Match Index To %d", kv.getServerDetail(), kv.matchIndex[clientId])
-
-	if cmd.Type == GET {
-		val, ok := kv.db[cmd.Key]
-		if !ok {
-			val = ""
-		}
-		cmd.Value = val
-		if kv.history[clientId] == nil {
-			kv.history[clientId] = make(map[int32]string)
-		}
-		kv.history[clientId][cmdId] = val
+	if reply, ok := kv.submitCmd[cmd.ClientId][cmd.CmdId]; ok {
+		reply.Status = OK
+		reply.Value = value
 	}
 }
 
@@ -277,7 +178,6 @@ func (kv *ShardKV) readSnapshot(lastIncludeIndex int, snapshot []byte) {
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
 	if d.Decode(&kv.db) != nil ||
-		d.Decode(&kv.prevCmd) != nil ||
 		d.Decode(&kv.submitCmd) != nil ||
 		d.Decode(&kv.history) != nil ||
 		d.Decode(&kv.matchIndex) != nil {
@@ -298,68 +198,45 @@ func (kv *ShardKV) checkSnapshot() {
 	buf := new(bytes.Buffer)
 	e := labgob.NewEncoder(buf)
 	if e.Encode(kv.db) != nil ||
-		e.Encode(kv.prevCmd) != nil ||
 		e.Encode(kv.submitCmd) != nil ||
 		e.Encode(kv.history) != nil ||
 		e.Encode(kv.matchIndex) != nil {
-		log.Fatalf("[%v]Encode KVServer State Failed", kv.getServerDetail())
+		log.Fatalf("[%v]Encode ShardKV State Failed", kv.getServerDetail())
 	}
 
 	go kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
 }
 
-func (kv *ShardKV) monitorTerm() {
-	for !kv.killed() {
-		term, _ := kv.rf.GetState()
-		if int32(term) != kv.getRaftTerm() {
-			DPrintf("[%s]Raft Term Change:%d-->%d", kv.getServerDetail(), kv.getRaftTerm(), term)
-			kv.setRaftTerm(int32(term))
+func (kv *ShardKV) updateShardConfig() {
+	for {
+		oldConf, newConf := kv.getShardConfig(), kv.shardCtrler.Query(-1)
+		if oldConf == nil || newConf.Num != oldConf.Num {
+			kv.setShardConfig(&newConf)
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-kv.shutdownCh:
+			return
+		case <-time.After(time.Millisecond * 100):
+		}
 	}
 }
 
-// the tester calls Kill() when a ShardKV instance won't
-// be needed again. you are not required to do anything
-// in Kill(), but it might be convenient to (for example)
-// turn off debug output from this instance.
 func (kv *ShardKV) Kill() {
-	kv.killCh <- true
+	close(kv.shutdownCh)
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 }
 
 func (kv *ShardKV) killed() bool {
-	z := atomic.LoadInt32(&kv.dead)
-	return z == 1
+	return atomic.LoadInt32(&kv.dead) == 1
 }
 
-// servers[] contains the ports of the servers in this group.
-//
-// me is the index of the current server in servers[].
-//
-// the k/v server should store snapshots through the underlying Raft
-// implementation, which should call persister.SaveStateAndSnapshot() to
-// atomically save the Raft state along with the snapshot.
-//
-// the k/v server should snapshot when Raft's saved state exceeds
-// maxraftstate bytes, in order to allow Raft to garbage-collect its
-// log. if maxraftstate is -1, you don't need to snapshot.
-//
-// gid is this group's GID, for interacting with the shardctrler.
-//
-// pass ctrlers[] to shardctrler.MakeClerk() so you can send
-// RPCs to the shardctrler.
-//
-// make_end(servername) turns a server name from a
-// Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
-// send RPCs. You'll need this to send RPCs to other groups.
-//
-// look at client.go for examples of how to use ctrlers[]
-// and make_end() to send RPCs to the group owning a specific shard.
-//
-// StartServer() must return quickly, so it should start goroutines
-// for any long-running work.
+func (kv *ShardKV) Report(args *Args, reply *Reply) {
+	DPrintf("[%v]Receive Report RPC %v, Delete History", kv.getServerDetail(), args)
+	kv.deleteHistory(args.ClientId, args.CommandId)
+	reply.Status = OK
+}
+
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -371,21 +248,20 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.make_end = make_end
 	kv.gid = gid
 	kv.ctrlers = ctrlers
-	kv.shardCtrlerClerk = shardctrler.MakeClerk(ctrlers)
+	kv.shardCtrler = shardctrler.MakeClerk(ctrlers)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.raftPersister = persister
-	kv.killCh = make(chan bool)
-	kv.db = make(map[string]string)
+	kv.shutdownCh = make(chan struct{})
+	kv.db = buildInMemoryDB()
 	kv.history = make(map[int64]map[int32]string)
 	kv.matchIndex = make(map[int64]int32)
-	kv.submitCmd = make(map[int]*Command)
-	kv.prevCmd = make(map[int64]*Command)
+	kv.submitCmd = make(map[int64]map[int32]*Reply)
 
 	go kv.ticker()
-	go kv.monitorTerm()
+	go kv.updateShardConfig()
 
 	return kv
 }
