@@ -8,372 +8,257 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
-)
-
-const (
-	JOIN = iota
-	LEAVE
-	MOVE
-	QUERY
 )
 
 type Command struct {
-	ClientId int64
-	CmdId    int32
+	Args
 
-	Type      int
-	QueryArgs QueryArgs
-	JoinArgs  JoinArgs
-	LeaveArgs LeaveArgs
-	MoveArgs  MoveArgs
-
-	Status Err
-	Conf   Config
+	Conf Config
 }
 
 func (cmd *Command) String() string {
-	return fmt.Sprintf("{ClientId:%d, CmdId:%d, Type:%d}", cmd.ClientId, cmd.CmdId, cmd.Type)
-}
-
-func buildCmd(opType int, clientId int64, cmdId int32, args Args) *Command {
-	return &Command{
-		Type:     opType,
-		ClientId: clientId,
-		CmdId:    cmdId,
-		Status:   OK,
-	}
+	return fmt.Sprintf("%v,Config:%v", &cmd.Args, cmd.Conf)
 }
 
 type ShardCtrler struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 	dead    int32
+	confDB  DB
 
-	killCh   chan bool
-	raftTerm int32
+	shutdownCh chan struct{}
 	//记录已经执行的最大的LogEntry的Index
 	appliedLogIdx int32
-	prevCmd       map[int64]*Command
-	submitCmd     map[int]*Command
+	submitCmd     map[int64]map[int32]*Reply
 
 	history map[int64]map[int32]*Config
 	//记录Server已经执行的最大的Command Index
 	matchIndex map[int64]int32
 
 	configCnt int32
-	configs   []Config // indexed by config num
 }
 
 func (sc *ShardCtrler) getConfigNo() int {
 	return int(atomic.AddInt32(&sc.configCnt, 1))
 }
 
-func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
-	DPrintf("[%v]Received Join RPC:%v From Client", sc.getServerDetail(), args)
-	cmd := buildCmd(JOIN, args.ClientId, args.CommandId, args)
-	cmd.JoinArgs = *args
-	reply.Err = sc.submit(cmd)
+func (sc *ShardCtrler) Join(args *Args, reply *Reply) {
+	sc.submitCommand(args, reply)
 }
 
-func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
-	DPrintf("[%v]Received Leave RPC:%v From Client", sc.getServerDetail(), args)
-	cmd := buildCmd(LEAVE, args.ClientId, args.CommandId, args)
-	cmd.LeaveArgs = *args
-	reply.Err = sc.submit(cmd)
+func (sc *ShardCtrler) Leave(args *Args, reply *Reply) {
+	sc.submitCommand(args, reply)
 }
 
-func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
-	DPrintf("[%v]Received Move RPC:%v From Client", sc.getServerDetail(), args)
-	cmd := buildCmd(MOVE, args.ClientId, args.CommandId, args)
-	cmd.MoveArgs = *args
-	reply.Err = sc.submit(cmd)
+func (sc *ShardCtrler) Move(args *Args, reply *Reply) {
+	sc.submitCommand(args, reply)
 }
 
-func (sc *ShardCtrler) submit(cmd *Command) (err Err) {
-	// 检查是否重复请求
-	sc.mu.Lock()
-	if sc.checkIfCommandAlreadyExecuted(cmd.ClientId, cmd.CmdId) {
-		DPrintf("[%s]Dupliacte %d Reuqest %v", sc.getServerDetail(), cmd.Type, cmd)
-		sc.mu.Unlock()
-		return OK
-	}
-	sc.mu.Unlock()
-
-	sc.submitCommand(cmd)
-	err = cmd.Status
-	if err != OK {
-		DPrintf("[%v]Command %v failed:%v", sc.getServerDetail(), cmd, err)
-	}
-	return err
+func (sc *ShardCtrler) Query(args *Args, reply *Reply) {
+	sc.submitCommand(args, reply)
 }
 
-func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
-	DPrintf("[%v]Received Query RPC:%v From Client", sc.getServerDetail(), args)
+func (sc *ShardCtrler) submitCommand(args *Args, reply *Reply) {
+	DPrintf("[%v]Received %s RPC:%v From Client", sc.getServerDetail(), args.Type, args)
+
 	clientId, cmdId := args.ClientId, args.CommandId
-
-	// 如果是重复命令，直接返回之前的结果
-	sc.mu.Lock()
-	if sc.checkIfCommandAlreadyExecuted(clientId, cmdId) {
-		DPrintf("[%s]Dupliacte Query Reuqest %v", sc.getServerDetail(), args)
-		reply.Err = OK
-		reply.Config = *sc.history[clientId][cmdId]
-		sc.mu.Unlock()
+	// 如果是重复请求，直接返回OK
+	if val, ok := sc.getHistory(clientId, cmdId); ok {
+		DPrintf("[%s]Dupliacte Reuqest %v", sc.getServerDetail(), args)
+		reply.Status = OK
+		if args.Type == QUERY {
+			reply.Config = *val
+		}
 		return
 	}
-	sc.mu.Unlock()
+	cmd := &Command{Args: *args}
 
-	cmd := buildCmd(QUERY, args.ClientId, args.CommandId, args)
-	cmd.QueryArgs = *args
-	sc.submitCommand(cmd)
-	reply.Err = cmd.Status
-	if reply.Err != OK {
-		DPrintf("[%s]Submit Command %v Failed:%v", sc.getServerDetail(), args, reply.Err)
-		return
+	sc.addSubmitCmd(cmd, reply)
+	defer sc.deleteSubmitCmd(cmd)
+
+	sc.submitCommandToRaft(cmd, reply)
+	if reply.Status != OK {
+		DPrintf("[%v]Command %v failed:%v", sc.getServerDetail(), cmd, reply.Status)
 	}
-	reply.Config = cmd.Conf
 }
 
-func (sc *ShardCtrler) submitCommand(cmd *Command) {
-	DPrintf("[%v]SubmitCommand", sc.getServerDetail())
-	sc.mu.Lock()
+func (sc *ShardCtrler) submitCommandToRaft(cmd *Command, reply *Reply) {
+	DPrintf("[%v]SubmitCommand %v", sc.getServerDetail(), cmd)
+	defer DPrintf("[%v]SubmitCommand %v Complete", sc.getServerDetail(), cmd)
+
 	cmdIdx, term, isLeader := sc.rf.Start(*cmd)
 	if !isLeader {
-		cmd.Status = ErrWrongLeader
-		sc.mu.Unlock()
+		DPrintf("[%v]Not Leader", sc.getServerDetail())
+		reply.Status = ErrNotLeader
 		return
 	}
-	sc.setRaftTerm(int32(term))
-	sc.submitCmd[cmdIdx] = cmd
-	sc.mu.Unlock()
+	DPrintf("[%v]Success Submit Command %v To Raft, CmdIdx:%d", sc.getServerDetail(), cmd, cmdIdx)
 
-	DPrintf("[%s]Submit Command %v To Raft, Index:%d, Term:%d", sc.getServerDetail(), cmd, cmdIdx, term)
-	for !sc.killed() && sc.getAppliedLogIdx() < int32(cmdIdx) && sc.getRaftTerm() == int32(term) {
-	}
-
-	if cmd.Status == LogNotMatch {
-		DPrintf("[%s]Command %v Not Match, Need Re-Submit To KVServer", sc.getServerDetail(), cmd)
-	}
-
-	if sc.getRaftTerm() != int32(term) {
-		cmd.Status = TermChanged
-		DPrintf("[%s]Command %v Is Expired, SubmitTerm:%d, CurrentTerm:%d, Need Re-Submit To KVServer",
-			sc.getServerDetail(), cmd, term, sc.getRaftTerm())
-	}
-
-	if sc.killed() {
-		cmd.Status = Killed
+	for !sc.killed() && sc.getRaftTerm() <= term && sc.getAppliedLogIdx() < int32(cmdIdx) {
 	}
 }
 
 func (sc *ShardCtrler) ticker() {
 	DPrintf("[%s]Ticker Start", sc.getServerDetail())
+	defer DPrintf("[%s]Ticker Stop", sc.getServerDetail())
 	for {
 		select {
 		case msg := <-sc.applyCh:
-			sc.mu.Lock()
-			cmdIdx, cmd := msg.CommandIndex, msg.Command.(Command)
-			DPrintf("[%s]Receive Command %d:%v From Raft applyChan", sc.getServerDetail(), cmdIdx, &cmd)
-			sc.applyCommand(cmdIdx, &cmd)
-			sc.setAppliedLogIdx(int32(cmdIdx))
-			sc.mu.Unlock()
-		case <-sc.killCh:
+			cmdIdx, cmd := int32(msg.CommandIndex), msg.Command.(Command)
+			DPrintf("[%s]Receive Command[%d] %v From Raft applyChan\n", sc.getServerDetail(), cmdIdx, &cmd)
+			sc.applyCommand(&cmd)
+			sc.setAppliedLogIdx(cmdIdx)
+		case <-sc.shutdownCh:
 			DPrintf("[%s]Sever Been Killed, Ticker End", sc.getServerDetail())
 			return
 		}
 	}
 }
 
-func (sc *ShardCtrler) monitorTerm() {
-	for !sc.killed() {
-		term, _ := sc.rf.GetState()
-		if int32(term) != sc.getRaftTerm() {
-			DPrintf("[%s]Raft Term Change:%d-->%d", sc.getServerDetail(), sc.getRaftTerm(), term)
-			sc.setRaftTerm(int32(term))
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
+func (sc *ShardCtrler) applyCommand(cmd *Command) {
+	DPrintf("[%v]Apply %v ", sc.getServerDetail(), cmd)
+	defer DPrintf("[%v]Apply %v Complete", sc.getServerDetail(), cmd)
 
-func (sc *ShardCtrler) applyCommand(cmdIdx int, cmd *Command) {
-	// 执行Command到本地状态机
-	prevCmd, ok := sc.prevCmd[cmd.ClientId]
-	if !ok || !compareCmd(cmd, prevCmd) {
+	if cmd.Type != QUERY && sc.matchIndex[cmd.ClientId] < cmd.CommandId {
+		// 执行Command到本地状态机
 		switch cmd.Type {
 		case JOIN:
-			sc.applyJoinCmd(&cmd.JoinArgs)
+			sc.applyJoinCmd(&cmd.Args)
 		case LEAVE:
-			sc.applyLeaveCmd(&cmd.LeaveArgs)
+			sc.applyLeaveCmd(&cmd.Args)
 		case MOVE:
-			sc.applyMoveCmd(&cmd.MoveArgs)
-		default:
+			sc.applyMoveCmd(&cmd.Args)
 		}
 	}
-	sc.prevCmd[cmd.ClientId] = cmd
 
-	// 检查CmdIdx所在位置的Command是否发生改变
-	cmd2, ok := sc.submitCmd[cmdIdx]
-	if !ok {
-		return
-	}
-	if !compareCmd(cmd, cmd2) {
-		DPrintf("[%v]Log At %d Not Match, Return", sc.getServerDetail(), cmdIdx)
-		cmd2.Status = LogNotMatch
-		return
-	}
-
-	cmd2.Status = OK
-	clientId, cmdId := cmd2.ClientId, cmd2.CmdId
-	sc.matchIndex[clientId] = maxi32(sc.matchIndex[clientId], cmdId)
-	DPrintf("[%v]Update Client %d's Match Index To %d", sc.getServerDetail(), clientId, sc.matchIndex[clientId])
+	var conf *Config
 	// 处理QueryCmd
-	if cmd2.Type == QUERY {
-		conf := sc.applyQueryCmd(&cmd2.QueryArgs)
-		cmd2.Conf = Config{
-			Num:    conf.Num,
-			Shards: conf.Shards,
-			Groups: make(map[int][]string),
-		}
-		//for idx, val := range sc.configs {
-		//	DPrintf("Query: %d: %v", idx, val)
-		//}
-		for k, v := range conf.Groups {
-			cmd2.Conf.Groups[k] = make([]string, len(v))
-			copy(cmd2.Conf.Groups[k], v)
-		}
-		if sc.history[clientId] == nil {
-			sc.history[clientId] = make(map[int32]*Config)
-		}
-		sc.history[clientId][cmdId] = conf
+	if cmd.Type == QUERY {
+		conf = sc.applyQueryCmd(&cmd.Args)
 	}
-	delete(sc.submitCmd, cmdIdx)
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.setHistory(cmd.ClientId, cmd.CommandId, conf)
+	if cmd.CommandId > sc.matchIndex[cmd.ClientId] {
+		sc.matchIndex[cmd.ClientId] = cmd.CommandId
+	}
+	if reply, ok := sc.submitCmd[cmd.ClientId][cmd.CommandId]; ok {
+		reply.Status = OK
+		if conf != nil {
+			reply.Config = *conf
+		}
+	}
 }
 
-func (sc *ShardCtrler) applyJoinCmd(args *JoinArgs) {
-	oldConf := sc.getLatestConfig()
-	newConf := sc.createNewConfig()
+func (sc *ShardCtrler) applyMoveCmd(cmd *Args) {
+	oldConf := sc.confDB.get(-1)
+	newConf := sc.createNewConfByOldConf(oldConf)
+	newConf.Shards[cmd.Shard] = cmd.GID
+	sc.confDB.append(newConf)
+}
 
-	// 复制旧的Groups到NewConfig
-	for gid, serverAddr := range oldConf.Groups {
-		newConf.Groups[gid] = make([]string, len(serverAddr))
-		copy(newConf.Groups[gid], serverAddr)
-	}
+func (sc *ShardCtrler) applyQueryCmd(args *Args) *Config {
+	return sc.confDB.get(args.ConfigIdx)
+}
 
-	// 将新的Groups也添加进来,并记录新来的Gid
-	var newGidList []int
+// 新的GID加入，重新平均分配切片
+func (sc *ShardCtrler) applyJoinCmd(args *Args) {
+	oldConf := sc.confDB.get(-1)
+	newConf := sc.createNewConfByOldConf(oldConf)
+
+	// 将要Join的GID加入
 	for gid, serverAddr := range args.Servers {
 		newConf.Groups[gid] = make([]string, len(serverAddr))
 		copy(newConf.Groups[gid], serverAddr)
-
-		newGidList = append(newGidList, gid)
 	}
 
-	// 对新来的Gid进行排序，保证所有节点分配顺序一致
-	sort.Slice(newGidList, func(i, j int) bool {
-		return newGidList[i] < newGidList[j]
+	reShard(newConf)
+	sc.confDB.append(newConf)
+}
+
+func (sc *ShardCtrler) applyLeaveCmd(args *Args) {
+	leaveGIDs := args.GIDs
+	oldConf := sc.confDB.get(-1)
+	newConf := sc.createNewConfByOldConf(oldConf)
+
+	// 删除要Leave的GID
+	for _, gid := range leaveGIDs {
+		delete(newConf.Groups, gid)
+	}
+
+	// 将要Leave的GID负责的Shard置为未分配状态
+	for shard, gid := range newConf.Shards {
+		if contains(leaveGIDs, gid) {
+			newConf.Shards[shard] = 0
+		}
+	}
+
+	reShard(newConf)
+	sc.confDB.append(newConf)
+}
+
+func reShard(conf *Config) {
+	// 没有可用GID, 返回
+	if len(conf.Groups) == 0 {
+		conf.Shards = [NShards]int{}
+		return
+	}
+
+	gidShardCnt := make(map[int]int)
+	for gid := range conf.Groups {
+		gidShardCnt[gid] = 0
+	}
+	// 统计当前每个GID负责的Shard个数
+	for _, gid := range conf.Shards {
+		if gid != 0 {
+			gidShardCnt[gid]++
+		}
+	}
+
+	// 按照GID负责的Shard数从小到大排序，如果负责的Shard数相同，则按照Gid本身排序
+	// 确保所有节点分配顺序一致，分配结果相同
+	var gidList []Pair
+	for gid, cnt := range gidShardCnt {
+		gidList = append(gidList, Pair{gid, cnt})
+	}
+	sort.Slice(gidList, func(i, j int) bool {
+		a, b := gidList[i], gidList[j]
+		return a.cnt < b.cnt || (a.cnt == b.cnt && a.gid < b.gid)
 	})
 
-	// 计算每个Gid应该负责几个Shard,向下取整
-	times := NShards / len(newConf.Groups)
+	// 计算每个Gid负责的Shard上限,至少负责1个
+	times := maxInt(NShards/len(conf.Groups), 1)
 
-	// 统计Gid负责的Shard数
-	gidCnt := make(map[int]int)
-	newConf.Shards = oldConf.Shards
-	// 将新的Gid分配给Shard
-	for idx, newGidIdx := 0, 0; idx < NShards; idx++ {
-		oldGid := oldConf.Shards[idx]
-		gidCnt[oldGid]++
-		if gidCnt[oldGid] > times || newConf.Shards[idx] == 0 {
-			newConf.Shards[idx] = newGidList[newGidIdx]
-			newGidIdx = (newGidIdx + 1) % len(newGidList)
-		}
-	}
-
-	sc.configs = append(sc.configs, *newConf)
-}
-
-func (sc *ShardCtrler) applyLeaveCmd(args *LeaveArgs) {
-	leaveGids := args.GIDs
-	oldConf := sc.getLatestConfig()
-	newConf := sc.createNewConfig()
-	gidCnt := make(map[int]int)
-
-	// 将旧的Groups除去要Leave的，其余添加进newConf
-	for gid, serverAddr := range oldConf.Groups {
-		if contains(leaveGids, gid) {
+	// 重分配Shard给Gid，尽可能少的移动Shard
+	for shardIdx, gidIdx := 0, 0; shardIdx < NShards; shardIdx++ {
+		oldGid := conf.Shards[shardIdx]
+		if oldGid != 0 && gidShardCnt[oldGid] <= times {
 			continue
 		}
-		newConf.Groups[gid] = make([]string, len(serverAddr))
-		copy(newConf.Groups[gid], serverAddr)
-		gidCnt[gid] = 0
-	}
 
-	// gidCnt长度为0，即所有Gid都为空
-	if len(gidCnt) != 0 {
-		// 把旧的Shard分配情况复制进NewConf
-		newConf.Shards = oldConf.Shards
-		// 统计之前Shard对Gid的使用频率
-		for _, gid := range oldConf.Shards {
-			if contains(leaveGids, gid) {
-				continue
-			}
-			gidCnt[gid]++
+		// 寻找可分配的 GID
+		for gidIdx < len(gidList) && gidShardCnt[gidList[gidIdx].gid] >= times {
+			gidIdx++
 		}
-		// 对Gid按照使用频率进行排序,频率相同就按照Gid排序
-		var gidList []Pair
-		for gid, cnt := range gidCnt {
-			gidList = append(gidList, Pair{gid, cnt})
+		if gidIdx >= len(gidList) {
+			return
 		}
-		sort.Slice(gidList, func(i, j int) bool {
-			if gidList[i].cnt == gidList[j].cnt {
-				return gidList[i].gid < gidList[j].gid
-			}
-			return gidList[i].cnt < gidList[j].cnt
-		})
-
-		// 计算每个Gid应该负责几个Shard，向下取整
-		times := NShards / len(newConf.Groups)
-		newConf.Shards = oldConf.Shards
-		// 将新的Gid分配给Shard
-		for idx, newGidIdx := 0, 0; idx < NShards; idx++ {
-			oldGid := newConf.Shards[idx]
-			if gidCnt[oldGid] > times || contains(leaveGids, oldGid) {
-				newConf.Shards[idx] = gidList[newGidIdx].gid
-				newGidIdx = (newGidIdx + 1) % len(gidList)
-			}
+		newGid := gidList[gidIdx].gid
+		conf.Shards[shardIdx] = newGid
+		gidShardCnt[newGid]++
+		if oldGid != 0 {
+			gidShardCnt[oldGid]--
 		}
 	}
-	sc.configs = append(sc.configs, *newConf)
 }
 
-func (sc *ShardCtrler) applyMoveCmd(cmd *MoveArgs) {
-	oldConf := sc.getLatestConfig()
-	newConf := sc.createNewConfig()
-	newConf.Shards = oldConf.Shards
-	for gid, serverAddr := range oldConf.Groups {
-		newConf.Groups[gid] = make([]string, len(serverAddr))
-		copy(newConf.Groups[gid], serverAddr)
-	}
-	newConf.Shards[cmd.Shard] = cmd.GID
-	sc.configs = append(sc.configs, *newConf)
-}
-
-func (sc *ShardCtrler) applyQueryCmd(args *QueryArgs) (conf *Config) {
-	if args.Num == -1 || args.Num >= len(sc.configs) {
-		return sc.getLatestConfig()
-	}
-	return &sc.configs[args.Num]
-}
-
-func (sc *ShardCtrler) Report(args *QueryArgs, reply *QueryReply) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	clientID, cmdId := args.ClientId, args.CommandId
+func (sc *ShardCtrler) Report(args *Args, reply *Reply) {
 	DPrintf("[%v]Receive Report RPC %v, Delete History", sc.getServerDetail(), args)
-	delete(sc.history[clientID], cmdId)
-	reply.Err = OK
+	sc.deleteHistory(args.ClientId, args.CommandId)
+	reply.Status = OK
 }
 
 // the tester calls Kill() when a ShardCtrler instance won't
@@ -381,14 +266,13 @@ func (sc *ShardCtrler) Report(args *QueryArgs, reply *QueryReply) {
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
 func (sc *ShardCtrler) Kill() {
+	close(sc.shutdownCh)
 	atomic.StoreInt32(&sc.dead, 1)
 	sc.rf.Kill()
-	sc.killCh <- true
 }
 
 func (sc *ShardCtrler) killed() bool {
-	z := atomic.LoadInt32(&sc.dead)
-	return z == 1
+	return atomic.LoadInt32(&sc.dead) == 1
 }
 
 // needed by shardkv tester
@@ -400,21 +284,17 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc := new(ShardCtrler)
 	sc.me = me
 
-	sc.configs = make([]Config, 1)
-	sc.configs[0].Groups = map[int][]string{}
-
 	labgob.Register(Command{})
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+	sc.confDB = buildInMemoryDB()
 
-	sc.killCh = make(chan bool)
+	sc.shutdownCh = make(chan struct{})
 	sc.history = make(map[int64]map[int32]*Config)
 	sc.matchIndex = make(map[int64]int32)
-	sc.prevCmd = make(map[int64]*Command)
-	sc.submitCmd = make(map[int]*Command)
+	sc.submitCmd = make(map[int64]map[int32]*Reply)
 
 	go sc.ticker()
-	go sc.monitorTerm()
 
 	return sc
 }

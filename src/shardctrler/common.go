@@ -32,137 +32,102 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+func (c *Config) String() string {
+	return fmt.Sprintf("{Config Num:%d,Shards:%v,Groups:%v}", c.Num, c.Shards, c.Groups)
+}
+
+type CmdType int
+
 const (
-	OK             = "OK"
-	ErrWrongLeader = "ErrWrongLeader"
-	Killed         = "Killed"
-	LogNotMatch    = "LogNotMatch"
-	TermChanged    = "TermChanged"
+	JOIN CmdType = iota
+	LEAVE
+	MOVE
+	QUERY
 )
 
-type Err string
-
-type Args interface {
-	String() string
-	GetCommandId() int32
+func (c CmdType) String() string {
+	switch c {
+	case JOIN:
+		return "Join"
+	case LEAVE:
+		return "Leave"
+	case MOVE:
+		return "Move"
+	case QUERY:
+		return "Query"
+	default:
+		return "Unknown CmdType"
+	}
 }
 
-type Reply interface {
-	getErr() Err
-	String() string
-}
-
-type JoinArgs struct {
+type Args struct {
 	ClientId  int64
 	CommandId int32
 
+	Type CmdType
+	// JoinArg
 	Servers map[int][]string // new GID -> servers mappings
-}
-
-func (args *JoinArgs) String() string {
-	return fmt.Sprintf("{JoinArgs ClientId:%d,CmdId:%d,Servers:%v}", args.ClientId, args.CommandId, args.Servers)
-}
-
-func (args *JoinArgs) GetCommandId() int32 {
-	return args.CommandId
-}
-
-type JoinReply struct {
-	Err Err
-}
-
-func (reply *JoinReply) getErr() Err {
-	return reply.Err
-}
-
-func (reply *JoinReply) String() string {
-	return fmt.Sprintf("{JoinReply Err:%v}", reply.Err)
-}
-
-type LeaveArgs struct {
-	ClientId  int64
-	CommandId int32
-
+	// LeaveArg
 	GIDs []int
-}
-
-func (args *LeaveArgs) String() string {
-	return fmt.Sprintf("{LeaveArgs ClientId:%d,CmdId:%d,GIDs:%v}", args.ClientId, args.CommandId, args.GIDs)
-}
-
-func (args *LeaveArgs) GetCommandId() int32 {
-	return args.CommandId
-}
-
-type LeaveReply struct {
-	Err Err
-}
-
-func (reply *LeaveReply) getErr() Err {
-	return reply.Err
-}
-
-func (reply *LeaveReply) String() string {
-	return fmt.Sprintf("{LeaveReply Err:%v}", reply.Err)
-}
-
-type MoveArgs struct {
-	ClientId  int64
-	CommandId int32
-
+	// MoveArg
 	Shard int
 	GID   int
+	// QueryArg
+	ConfigIdx int
 }
 
-func (args *MoveArgs) String() string {
-	return fmt.Sprintf("{LeaveArgs ClientId:%d,CmdId:%d,Shard:%d,GID:%d}", args.ClientId, args.CommandId, args.Shard, args.GID)
+func (args *Args) String() string {
+	switch args.Type {
+	case JOIN:
+		return fmt.Sprintf("{ArgType:Join ClientId:%d,CmdId:%d,Servers:%v}", args.ClientId, args.CommandId, args.Servers)
+	case LEAVE:
+		return fmt.Sprintf("{ArgType:LEAVE ClientId:%d,CmdId:%d,GIDs:%v}", args.ClientId, args.CommandId, args.GIDs)
+	case MOVE:
+		return fmt.Sprintf("{ArgType:Move ClientId:%d,CmdId:%d,Shard:%d,GID:%d}", args.ClientId, args.CommandId, args.Shard, args.GID)
+	case QUERY:
+		return fmt.Sprintf("{ArgType:QUERY ClientId:%d,CmdId:%d,ConfigIdx:%d}", args.ClientId, args.CommandId, args.ConfigIdx)
+	default:
+		return ""
+	}
 }
 
-func (args *MoveArgs) GetCommandId() int32 {
-	return args.CommandId
+type Status int
+
+const (
+	Failed Status = iota
+	ErrNotLeader
+	OK
+)
+
+func (c Status) String() string {
+	switch c {
+	case OK:
+		return "OK"
+	case Failed:
+		return "Failed"
+	case ErrNotLeader:
+		return "ErrNotLeader"
+	default:
+		return "Unknown Status"
+	}
 }
 
-type MoveReply struct {
-	Err Err
-}
-
-func (reply *MoveReply) getErr() Err {
-	return reply.Err
-}
-
-func (reply *MoveReply) String() string {
-	return fmt.Sprintf("{MoveReply Err:%v}", reply.Err)
-}
-
-type QueryArgs struct {
-	ClientId  int64
-	CommandId int32
-
-	Num int // desired config number
-}
-
-func (args *QueryArgs) String() string {
-	return fmt.Sprintf("{QueryArgs ClientId:%d,CmdId:%d,Num:%d}", args.ClientId, args.CommandId, args.Num)
-}
-
-func (args *QueryArgs) GetCommandId() int32 {
-	return args.CommandId
-}
-
-type QueryReply struct {
-	Err    Err
+type Reply struct {
+	Status Status
 	Config Config
 }
 
-func (reply *QueryReply) getErr() Err {
-	return reply.Err
-}
-
-func (reply *QueryReply) String() string {
-	return fmt.Sprintf("{QueryReply Err:%v, Config:%v}", reply.Err, reply.Config)
+func (r *Reply) String() string {
+	return fmt.Sprintf("{QueryReply Err:%v, Config:%v}", r.Status, r.Config)
 }
 
 type Pair struct {
 	gid int
 	cnt int
+}
+
+type DB interface {
+	get(idx int) *Config
+	size() int
+	append(conf *Config)
 }

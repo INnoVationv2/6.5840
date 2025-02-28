@@ -1,15 +1,15 @@
 package shardctrler
 
 import (
+	"6.5840/logger"
 	"fmt"
-	"log"
 )
 
 const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
-		log.Printf(format, a...)
+		logger.Debug(format, a...)
 	}
 	return
 }
@@ -18,13 +18,14 @@ func (sc *ShardCtrler) getServerDetail() string {
 	return fmt.Sprintf("ShardCtrler %d", sc.me)
 }
 
-func compareCmd(cmd1, cmd2 *Command) bool {
-	return cmd1.Type == cmd2.Type &&
-		cmd1.ClientId == cmd2.ClientId &&
-		cmd1.CmdId == cmd2.CmdId
+func maxi32(x, y int32) int32 {
+	if x >= y {
+		return x
+	}
+	return y
 }
 
-func maxi32(x, y int32) int32 {
+func maxInt(x, y int) int {
 	if x >= y {
 		return x
 	}
@@ -40,23 +41,15 @@ func contains(slice []int, num int) bool {
 	return false
 }
 
-func (sc *ShardCtrler) checkIfCommandAlreadyExecuted(clientId int64, commandId int32) bool {
-	if sc.matchIndex[clientId] >= commandId {
-		return true
-	}
-	return false
-}
-
-func (sc *ShardCtrler) createNewConfig() *Config {
-	return &Config{
+func (sc *ShardCtrler) createNewConfByOldConf(oldConf *Config) (newConf *Config) {
+	newConf = &Config{
 		Num:    sc.getConfigNo(),
+		Shards: oldConf.Shards,
 		Groups: make(map[int][]string),
 	}
-}
-
-func (sc *ShardCtrler) createNewConfigByOldConf(conf *Config) *Config {
-	return &Config{
-		Num:    sc.getConfigNo(),
-		Groups: make(map[int][]string),
+	for gid, serverAddr := range oldConf.Groups {
+		newConf.Groups[gid] = make([]string, len(serverAddr))
+		copy(newConf.Groups[gid], serverAddr)
 	}
+	return
 }
