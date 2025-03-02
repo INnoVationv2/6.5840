@@ -10,11 +10,6 @@ func (sc *ShardCtrler) setAppliedLogIdx(logIdx int32) {
 	atomic.StoreInt32(&sc.appliedLogIdx, logIdx)
 }
 
-func (sc *ShardCtrler) getRaftTerm() (term int) {
-	term, _ = sc.rf.GetState()
-	return
-}
-
 func (sc *ShardCtrler) getHistory(clientId int64, cmdId int32) (val *Config, ok bool) {
 	sc.mu.RLock()
 	defer sc.mu.RUnlock()

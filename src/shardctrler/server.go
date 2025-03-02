@@ -96,7 +96,7 @@ func (sc *ShardCtrler) submitCommandToRaft(cmd *Command, reply *Reply) {
 	}
 	DPrintf("[%v]Success Submit Command %v To Raft, CmdIdx:%d", sc.getServerDetail(), cmd, cmdIdx)
 
-	for !sc.killed() && sc.getRaftTerm() <= term && sc.getAppliedLogIdx() < int32(cmdIdx) {
+	for !sc.killed() && sc.rf.GetTerm() <= term && sc.getAppliedLogIdx() < int32(cmdIdx) {
 	}
 }
 

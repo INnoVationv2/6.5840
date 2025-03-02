@@ -38,7 +38,7 @@ func (rf *Raft) sendSnapshotToFollower(s *replicationState) {
 
 	var res *InstallSnapshotResponse
 	for {
-		if !rf.isLeader() || rf.killed() {
+		if !rf.IsLeader() || rf.killed() {
 			return
 		}
 		res = &InstallSnapshotResponse{}

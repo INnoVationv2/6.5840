@@ -13,11 +13,6 @@ func (kv *KVServer) setAppliedLogIdx(logIdx int32) {
 	atomic.StoreInt32(&kv.appliedLogIdx, logIdx)
 }
 
-func (kv *KVServer) getRaftTerm() int {
-	term, _ := kv.rf.GetState()
-	return term
-}
-
 func (kv *KVServer) getHistory(clientId int64, cmdId int32) (val string, ok bool) {
 	kv.mu.RLock()
 	defer kv.mu.RUnlock()

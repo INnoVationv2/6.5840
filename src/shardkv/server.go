@@ -38,6 +38,13 @@ type ShardKV struct {
 	// Client已执行过的最大Command编号
 	matchIndex map[int64]int32
 	history    map[int64]map[int32]string
+
+	id         int64
+	commandCnt int32
+}
+
+func (kv *ShardKV) getCmdId() int32 {
+	return atomic.AddInt32(&kv.commandCnt, 1)
 }
 
 func (kv *ShardKV) checkIfCommandAlreadyExecuted(clientId int64, commandId int32) bool {
@@ -47,36 +54,53 @@ func (kv *ShardKV) checkIfCommandAlreadyExecuted(clientId int64, commandId int32
 	return false
 }
 
-func (kv *ShardKV) checkShard(key string) bool {
-	for kv.shardConf == nil {
+func (kv *ShardKV) checkShard(key string) Status {
+	shard := key2shard(key)
+	if kv.shardConf.Shards[shard] != kv.gid {
+		return ErrWrongGroup
+	} else if kv.db.getShardStatus(shard) != Available {
+		return Failed
+	}
+	return OK
+}
+
+func (kv *ShardKV) Get(arg *KVArgs, reply *Reply) {
+	kv.submit(Get, arg, reply)
+}
+
+func (kv *ShardKV) Put(args *KVArgs, reply *Reply) {
+	kv.submit(Put, args, reply)
+}
+
+func (kv *ShardKV) Append(args *KVArgs, reply *Reply) {
+	kv.submit(Append, args, reply)
+}
+
+func (kv *ShardKV) AddShard(args *SendShardArgs, reply *Reply) {
+	kv.submit(ShardData, args, reply)
+}
+
+// 由Leader所在的KVServer发起, 向所有KVServer同步ShardConfig
+func (kv *ShardKV) setNewShardConf(newConf *shardctrler.Config) {
+	cmd := kv.buildCommand(ShardConfig, newConf)
+	DPrintf("[%v]Submit Command %v To Raft", kv.getServerDetail(), cmd)
+	kv.rf.Start(*cmd)
+}
+
+func (kv *ShardKV) delShard(args *SendShardArgs) {
+	args.Shard.Op = Delete
+	args.Shard.Data = nil
+	cmd := kv.buildCommand(ShardData, args)
+	kv.rf.Start(*cmd)
+}
+
+func (kv *ShardKV) submit(op CmdType, arg Args, reply *Reply) {
+	for kv.getShardConfig() == nil {
 		time.Sleep(time.Millisecond * 10)
 	}
-	shard := key2shard(key)
-	return kv.shardConf.Shards[shard] == kv.gid
-}
 
-func (kv *ShardKV) Get(arg *Args, reply *Reply) {
-	kv.submitCommand(Get, arg, reply)
-}
-
-func (kv *ShardKV) Put(args *Args, reply *Reply) {
-	kv.submitCommand(Put, args, reply)
-}
-
-func (kv *ShardKV) Append(args *Args, reply *Reply) {
-	kv.submitCommand(Append, args, reply)
-}
-
-func (kv *ShardKV) submitCommand(op CmdType, arg *Args, reply *Reply) {
 	DPrintf("[%v]Received %s RPC:%v", kv.getServerDetail(), op, arg)
-
-	if !kv.checkShard(arg.Key) {
-		DPrintf("Key %s Not Belong To KVServer %d", arg.Key, kv.gid)
-		reply.Status = ErrWrongGroup
-		return
-	}
-
-	clientId, cmdId := arg.ClientId, arg.CommandId
+	clientId, cmdId := arg.getClientId(), arg.getCmdId()
 	// 如果是重复请求，直接返回OK
 	if val, ok := kv.getHistory(clientId, cmdId); ok {
 		DPrintf("[%s]Dupliacte %s Reuqest %v", kv.getServerDetail(), op, arg)
@@ -84,22 +108,16 @@ func (kv *ShardKV) submitCommand(op CmdType, arg *Args, reply *Reply) {
 		reply.Value = val
 		return
 	}
-	cmd := buildCommand(op, arg)
-
-	kv.addSubmitCmd(cmd, reply)
-	defer kv.deleteSubmitCmd(cmd)
-
+	cmd := kv.buildCommand(op, arg)
 	kv.submitCmdToRaft(cmd, reply)
-	if reply.Status != OK {
-		DPrintf("[%v]Command %v failed:%v", kv.getServerDetail(), cmd, reply.Status)
-		return
-	}
 	DPrintf("[%v]%s Complete %v->%v", kv.getServerDetail(), op, arg, reply)
 }
 
 func (kv *ShardKV) submitCmdToRaft(cmd *Command, reply *Reply) {
 	DPrintf("[%v]Submit Command %v To Raft", kv.getServerDetail(), cmd)
-	defer DPrintf("[%v]Submit Command %v To Raft Complete", kv.getServerDetail(), cmd)
+
+	kv.addSubmitCmd(cmd, reply)
+	defer kv.deleteSubmitCmd(cmd)
 
 	cmdIdx, raftTerm, isLeader := kv.rf.Start(*cmd)
 	if !isLeader {
@@ -109,7 +127,12 @@ func (kv *ShardKV) submitCmdToRaft(cmd *Command, reply *Reply) {
 	}
 	DPrintf("[%v]Success Submit Command %v To Raft, CmdIdx:%d", kv.getServerDetail(), cmd, cmdIdx)
 
-	for !kv.killed() && kv.getRaftTerm() <= raftTerm && kv.getAppliedLogIdx() < int32(cmdIdx) {
+	for !kv.killed() && kv.rf.GetTerm() <= raftTerm && kv.getAppliedLogIdx() < int32(cmdIdx) {
+	}
+
+	if reply.Status != OK {
+		DPrintf("[%v]Command %v failed:%v", kv.getServerDetail(), cmd, reply.Status)
+		return
 	}
 }
 
@@ -138,22 +161,48 @@ func (kv *ShardKV) ticker() {
 func (kv *ShardKV) applyCommand(cmd *Command) {
 	DPrintf("[%v]Apply %v ", kv.getServerDetail(), cmd)
 	defer DPrintf("[%v]Apply %v Complete", kv.getServerDetail(), cmd)
+	if cmd.Type == ShardConfig {
+		kv.applyNewShardConfig(cmd.ShardConf)
+		return
+	}
+
+	reply, ok := kv.getSubmitCmd(cmd)
+
+	if cmd.Type == ShardData {
+		var status Status
+		switch cmd.ShardData.Op {
+		case Add:
+			status = kv.addShard(cmd)
+		case Delete:
+			status = kv.deleteShard(cmd)
+		}
+		if ok {
+			reply.Status = status
+		}
+		return
+	}
+
+	args := cmd.KVArgs
+	if status := kv.checkShard(args.Key); status != OK && ok {
+		reply.Status = status
+		return
+	}
 
 	if cmd.Type != Get && kv.matchIndex[cmd.ClientId] < cmd.CmdId {
 		switch cmd.Type {
 		case Put:
-			kv.db.set(cmd.Key, cmd.Value)
-			DPrintf("[%v][ApplyCommand]Put %v->%v", kv.getServerDetail(), cmd, cmd.Value)
+			kv.db.set(args.Key, args.Value)
+			//DPrintf("[%v][ApplyCommand]Put %v->%v", kv.getServerDetail(), args.Key, args.Value)
 		case Append:
-			value := kv.db.append(cmd.Key, cmd.Value)
-			DPrintf("[%v][ApplyCommand]Append %v->%v", kv.getServerDetail(), cmd, value)
+			kv.db.append(args.Key, args.Value)
+			//DPrintf("[%v][ApplyCommand]Append %v", kv.getServerDetail(), cmd)
 		}
 	}
 
 	value := ""
 	if cmd.Type == Get {
-		value = kv.db.get(cmd.Key)
-		DPrintf("[%v][ApplyCommand]Get %v->%v", kv.getServerDetail(), cmd, value)
+		value = kv.db.get(args.Key)
+		//DPrintf("[%v][ApplyCommand]Get %v->%v", kv.getServerDetail(), cmd, value)
 	}
 
 	kv.mu.Lock()
@@ -162,7 +211,7 @@ func (kv *ShardKV) applyCommand(cmd *Command) {
 	if cmd.CmdId > kv.matchIndex[cmd.ClientId] {
 		kv.matchIndex[cmd.ClientId] = cmd.CmdId
 	}
-	if reply, ok := kv.submitCmd[cmd.ClientId][cmd.CmdId]; ok {
+	if ok {
 		reply.Status = OK
 		reply.Value = value
 	}
@@ -207,20 +256,6 @@ func (kv *ShardKV) checkSnapshot() {
 	go kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
 }
 
-func (kv *ShardKV) updateShardConfig() {
-	for {
-		oldConf, newConf := kv.getShardConfig(), kv.shardCtrler.Query(-1)
-		if oldConf == nil || newConf.Num != oldConf.Num {
-			kv.setShardConfig(&newConf)
-		}
-		select {
-		case <-kv.shutdownCh:
-			return
-		case <-time.After(time.Millisecond * 100):
-		}
-	}
-}
-
 func (kv *ShardKV) Kill() {
 	close(kv.shutdownCh)
 	atomic.StoreInt32(&kv.dead, 1)
@@ -231,9 +266,9 @@ func (kv *ShardKV) killed() bool {
 	return atomic.LoadInt32(&kv.dead) == 1
 }
 
-func (kv *ShardKV) Report(args *Args, reply *Reply) {
+func (kv *ShardKV) Report(args *BasicArgs, reply *Reply) {
 	DPrintf("[%v]Receive Report RPC %v, Delete History", kv.getServerDetail(), args)
-	kv.deleteHistory(args.ClientId, args.CommandId)
+	kv.deleteHistory(args.ClientId, args.CmdId)
 	reply.Status = OK
 }
 
@@ -244,6 +279,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv := new(ShardKV)
 	kv.me = me
+	kv.id = int64(me)
 	kv.maxraftstate = maxraftstate
 	kv.make_end = make_end
 	kv.gid = gid
@@ -261,7 +297,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.submitCmd = make(map[int64]map[int32]*Reply)
 
 	go kv.ticker()
-	go kv.updateShardConfig()
+	go kv.configMonitor()
 
 	return kv
 }

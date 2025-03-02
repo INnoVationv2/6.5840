@@ -7,7 +7,7 @@ import (
 )
 
 func (kv *ShardKV) getServerDetail() string {
-	return fmt.Sprintf("ShardKvServer %d", kv.gid)
+	return fmt.Sprintf("ShardKV %d_%d", kv.gid, kv.me)
 }
 
 func (kv *ShardKV) getAppliedLogIdx() int32 {
@@ -17,11 +17,6 @@ func (kv *ShardKV) getAppliedLogIdx() int32 {
 func (kv *ShardKV) setAppliedLogIdx(logIdx int32) {
 	DPrintf("[%s]Update appliedLogIdx To %d", kv.getServerDetail(), logIdx)
 	atomic.StoreInt32(&kv.appliedLogIdx, logIdx)
-}
-
-func (kv *ShardKV) getRaftTerm() int {
-	term, _ := kv.rf.GetState()
-	return term
 }
 
 func (kv *ShardKV) getHistory(clientId int64, cmdId int32) (val string, ok bool) {
@@ -58,11 +53,12 @@ func (kv *ShardKV) addSubmitCmd(cmd *Command, result *Reply) {
 	kv.submitCmd[clientId][cmdId] = result
 }
 
-func (kv *ShardKV) getSubmitCmd(cmd *Command) *Reply {
+func (kv *ShardKV) getSubmitCmd(cmd *Command) (reply *Reply, ok bool) {
 	kv.mu.RLock()
 	defer kv.mu.RUnlock()
 
-	return kv.submitCmd[cmd.ClientId][cmd.CmdId]
+	reply, ok = kv.submitCmd[cmd.ClientId][cmd.CmdId]
+	return
 }
 
 func (kv *ShardKV) deleteSubmitCmd(cmd *Command) {

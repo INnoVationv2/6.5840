@@ -201,7 +201,7 @@ func (rf *Raft) runLeader() {
 		DPrintf("[%v]Stop Run Leader", rf.getServerDetail())
 	}()
 
-	for rf.isLeader() {
+	for rf.IsLeader() {
 		select {
 		case <-rf.shutdownCh:
 			return
@@ -232,11 +232,15 @@ func (rf *Raft) handleRPC(rpc *RPC) {
 	asyncNotifyCh(rpc.replyChan)
 }
 
-func (rf *Raft) GetState() (int, bool) {
-	return int(rf.getCurrentTerm()), rf.isLeader()
+func (rf *Raft) GetTerm() int {
+	return int(rf.getCurrentTerm())
 }
 
-func (rf *Raft) isLeader() bool {
+func (rf *Raft) GetState() (int, bool) {
+	return rf.GetTerm(), rf.IsLeader()
+}
+
+func (rf *Raft) IsLeader() bool {
 	return rf.getRole() == LEADER
 }
 

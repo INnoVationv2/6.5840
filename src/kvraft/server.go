@@ -81,7 +81,7 @@ func (kv *KVServer) submitCmdToRaft(cmd *Command, reply *Reply) {
 	}
 	DPrintf("[%v]Success Submit Command %v To Raft, CmdIdx:%d", kv.getServerDetail(), cmd, cmdIdx)
 
-	for !kv.killed() && kv.getRaftTerm() <= raftTerm && kv.getAppliedLogIdx() < int32(cmdIdx) {
+	for !kv.killed() && kv.rf.GetTerm() <= raftTerm && kv.getAppliedLogIdx() < int32(cmdIdx) {
 	}
 }
 

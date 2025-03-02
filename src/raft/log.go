@@ -128,7 +128,7 @@ func (c *commitment) recalculate() {
 // Lab测试提交命令的地方，但是和客户端提交command不同
 // 这里需要立刻返回，而不是等日志提交后才返回结果
 func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
-	if !rf.isLeader() {
+	if !rf.IsLeader() {
 		return -1, -1, false
 	}
 	rf.newLogMu.Lock()
@@ -385,7 +385,7 @@ func (rf *Raft) sendLogToFollower(s *replicationState, req *AppendEntriesRequest
 
 	var res *AppendEntriesResponse
 	for {
-		if !rf.isLeader() || rf.killed() {
+		if !rf.IsLeader() || rf.killed() {
 			return
 		}
 		res = &AppendEntriesResponse{}
