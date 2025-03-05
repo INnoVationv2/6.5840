@@ -56,7 +56,7 @@ func (kv *ShardKV) checkIfCommandAlreadyExecuted(clientId int64, commandId int32
 
 func (kv *ShardKV) checkShard(key string) Status {
 	shard := key2shard(key)
-	if kv.shardConf.Shards[shard] != kv.gid {
+	if kv.getShardConfig().Shards[shard] != kv.gid {
 		return ErrWrongGroup
 	} else if kv.db.getShardStatus(shard) != Available {
 		return Failed
@@ -137,7 +137,7 @@ func (kv *ShardKV) submitCmdToRaft(cmd *Command, reply *Reply) {
 }
 
 func (kv *ShardKV) ticker() {
-	DPrintf("[%s]Start KVServer.Ticker", kv.getServerDetail())
+	DPrintf("[%s]Start ShardKV", kv.getServerDetail())
 	for {
 		select {
 		case <-kv.shutdownCh:
@@ -226,12 +226,18 @@ func (kv *ShardKV) readSnapshot(lastIncludeIndex int, snapshot []byte) {
 	kv.setAppliedLogIdx(int32(lastIncludeIndex))
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
-	if d.Decode(&kv.db) != nil ||
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	var db [shardctrler.NShards]map[string]string
+	if d.Decode(&db) != nil ||
 		d.Decode(&kv.submitCmd) != nil ||
 		d.Decode(&kv.history) != nil ||
-		d.Decode(&kv.matchIndex) != nil {
+		d.Decode(&kv.matchIndex) != nil ||
+		d.Decode(&kv.shardConf) != nil {
 		log.Fatalf("[%v]Decode Raft State Failed", kv.getServerDetail())
 	}
+	kv.db.setDB(db)
 }
 
 func (kv *ShardKV) checkSnapshot() {
@@ -243,20 +249,25 @@ func (kv *ShardKV) checkSnapshot() {
 		return
 	}
 	DPrintf("[%v]Build Snapshot", kv.getServerDetail())
+
+	kv.mu.RLock()
 	// 大小接近，进行snapshot
 	buf := new(bytes.Buffer)
 	e := labgob.NewEncoder(buf)
-	if e.Encode(kv.db) != nil ||
+	if e.Encode(kv.db.exportAll()) != nil ||
 		e.Encode(kv.submitCmd) != nil ||
 		e.Encode(kv.history) != nil ||
-		e.Encode(kv.matchIndex) != nil {
+		e.Encode(kv.matchIndex) != nil ||
+		e.Encode(kv.shardConf) != nil {
 		log.Fatalf("[%v]Encode ShardKV State Failed", kv.getServerDetail())
 	}
+	kv.mu.RUnlock()
 
-	go kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
+	kv.rf.Snapshot(int(kv.appliedLogIdx), buf.Bytes())
 }
 
 func (kv *ShardKV) Kill() {
+	DPrintf("[%v]Kill ShardKV\n", kv.getServerDetail())
 	close(kv.shutdownCh)
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()

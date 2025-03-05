@@ -166,8 +166,10 @@ type DB interface {
 	get(key string) (val string)
 	set(key, val string)
 	append(key, val string)
-	setDB(shard int, val map[string]string)
+	setShard(shard int, val map[string]string)
+	setDB(data [shardctrler.NShards]map[string]string)
 	export(shard int) (db map[string]string)
+	exportAll() (db [shardctrler.NShards]map[string]string)
 	getShardStatus(shard int) ShardStatus
 	setShardStatus(shard int, status ShardStatus)
 }

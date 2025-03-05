@@ -59,11 +59,17 @@ func (db *InMemoryDB) append(key, val string) {
 	db.dataMaps[shard][key] = value
 }
 
-func (db *InMemoryDB) setDB(shard int, val map[string]string) {
-	if shard >= 0 && shard < shardctrler.NShards && val != nil {
-		db.dataMaps[shard] = val
+func (db *InMemoryDB) setShard(shard int, data map[string]string) {
+	db.dataMaps[shard] = data
+	if data != nil && db.shardStatus[shard] != Available {
+		db.shardStatus[shard] = Available
 	}
-	db.setShardStatus(shard, Available)
+}
+
+func (db *InMemoryDB) setDB(data [shardctrler.NShards]map[string]string) {
+	for shard := 0; shard < shardctrler.NShards; shard++ {
+		db.setShard(shard, data[shard])
+	}
 }
 
 func (db *InMemoryDB) export(shard int) map[string]string {
@@ -75,6 +81,20 @@ func (db *InMemoryDB) export(shard int) map[string]string {
 		exportMap[key] = value
 	}
 	return exportMap
+}
+
+func (db *InMemoryDB) exportAll() [shardctrler.NShards]map[string]string {
+	var data [shardctrler.NShards]map[string]string
+	for shard := 0; shard < shardctrler.NShards; shard++ {
+		if db.dataMaps[shard] == nil {
+			continue
+		}
+		data[shard] = make(map[string]string)
+		for key, value := range db.dataMaps[shard] {
+			data[shard][key] = value
+		}
+	}
+	return data
 }
 
 func (db *InMemoryDB) getShardStatus(shard int) ShardStatus {

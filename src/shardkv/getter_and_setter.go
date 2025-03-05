@@ -72,7 +72,7 @@ func (kv *ShardKV) setShardConfig(conf *shardctrler.Config) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	DPrintf("[%v]Set new Shard Config:%v", kv.getServerDetail(), conf)
+	DPrintf("[%v]Set Shard Config:%v", kv.getServerDetail(), conf)
 	kv.shardConf = conf
 }
 

@@ -23,9 +23,9 @@ func (kv *ShardKV) configMonitor() {
 }
 
 func (kv *ShardKV) updateConfig() {
-	newConf := kv.shardCtrler.Query(-1)
-	if kv.shardConf == nil || newConf.Num > kv.shardConf.Num {
-		DPrintf("[%v]Found New Shard Config:%v", kv.getServerDetail(), &newConf)
+	oldConf, newConf := kv.getShardConfig(), kv.shardCtrler.Query(-1)
+	if oldConf == nil || newConf.Num > oldConf.Num {
+		DPrintf("[%v]Found New Shard Config:%v\n", kv.getServerDetail(), &newConf)
 		kv.setNewShardConf(&newConf)
 	}
 }
@@ -54,9 +54,9 @@ type SendShardArgs struct {
 }
 
 func (kv *ShardKV) applyNewShardConfig(newConf *shardctrler.Config) {
-	oldConf := kv.shardConf
-	DPrintf("[%v]Set New Shard Config:%v", kv.getServerDetail(), newConf)
-	kv.shardConf = newConf
+	oldConf := kv.getShardConfig()
+	DPrintf("[%v]Apply Shard Config:%v\n", kv.getServerDetail(), newConf)
+	kv.setShardConfig(newConf)
 
 	if oldConf == nil {
 		for shard := range newConf.Shards {
@@ -118,13 +118,14 @@ func (kv *ShardKV) sendShardData(args *SendShardArgs, servers []string) {
 func (kv *ShardKV) addShard(cmd *Command) Status {
 	shard := cmd.ShardData
 	shardNum := shard.ShardNum
-	if kv.shardConf.Num >= shard.ConfNum && kv.shardConf.Shards[shardNum] != kv.gid {
-		DPrintf("[%v]ConfNum:%d,Shard %d Belong to GID:%d", kv.getServerDetail(), shard.ConfNum, shardNum, kv.shardConf.Shards[shardNum])
+	shardConf := kv.getShardConfig()
+	if shardConf.Num >= shard.ConfNum && shardConf.Shards[shardNum] != kv.gid {
+		DPrintf("[%v]ConfNum:%d,Shard %d Belong to GID:%d", kv.getServerDetail(), shard.ConfNum, shardNum, shardConf.Shards[shardNum])
 		return ErrWrongGroup
 	}
 
 	DPrintf("[%v]Add New Shard %d", kv.getServerDetail(), shardNum)
-	kv.db.setDB(shardNum, shard.Data)
+	kv.db.setShard(shardNum, shard.Data)
 	return OK
 }
 
