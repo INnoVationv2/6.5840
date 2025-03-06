@@ -22,14 +22,7 @@ type Args interface {
 type BasicArgs struct {
 	ClientId int64
 	CmdId    int32
-}
-
-func (args *BasicArgs) getClientId() int64 {
-	return args.ClientId
-}
-
-func (args *BasicArgs) getCmdId() int32 {
-	return args.CmdId
+	Type     CmdType
 }
 
 type KVPair struct {
@@ -39,29 +32,6 @@ type KVPair struct {
 
 func (p KVPair) String() string {
 	return fmt.Sprintf("Key:%v,Value:%v", p.Key, p.Value)
-}
-
-type KVArgs struct {
-	BasicArgs
-	KVPair
-}
-
-func (args *KVArgs) String() string {
-	return fmt.Sprintf("{Arg ClientId:%d,CmdId:%d,Args:%v}", args.ClientId, args.CmdId, args.KVPair)
-}
-
-func (ck *Clerk) buildGetArg(key string) *KVArgs {
-	return &KVArgs{
-		BasicArgs: BasicArgs{ClientId: ck.id, CmdId: ck.getCmdId()},
-		KVPair:    KVPair{Key: key},
-	}
-}
-
-func (ck *Clerk) buildPutAppendArg(key, val string) *KVArgs {
-	return &KVArgs{
-		BasicArgs: BasicArgs{ClientId: ck.id, CmdId: ck.getCmdId()},
-		KVPair:    KVPair{Key: key, Value: val},
-	}
 }
 
 type CmdType int
@@ -92,12 +62,10 @@ func (c CmdType) String() string {
 }
 
 type Command struct {
-	Type      CmdType
-	ClientId  int64
-	CmdId     int32
+	BasicArgs
 	KVArgs    *KVPair
 	ShardConf *shardctrler.Config
-	ShardData *Shard
+	Shard     *Shard
 }
 
 func (cmd *Command) String() string {
@@ -106,27 +74,52 @@ func (cmd *Command) String() string {
 		str = fmt.Sprintf("KVArgs:%v", cmd.KVArgs)
 	} else if cmd.ShardConf != nil {
 		str = fmt.Sprintf("ShardConf:%v", cmd.ShardConf)
-	} else if cmd.ShardData != nil {
-		str = fmt.Sprintf("ShardData:%v", cmd.ShardData)
+	} else if cmd.Shard != nil {
+		str = fmt.Sprintf("ShardData:%v", cmd.Shard)
 	}
-	return fmt.Sprintf("{Type:%s,ClientId%d,CmdId:%d,%s}", cmd.Type, cmd.ClientId, cmd.CmdId, str)
+	return fmt.Sprintf("{Type:%s,ClientId:%d,CmdId:%d,%s}", cmd.Type, cmd.ClientId, cmd.CmdId, str)
 }
 
-func (kv *ShardKV) buildCommand(opType CmdType, args interface{}) (cmd *Command) {
-	cmd = &Command{
-		Type:     opType,
-		ClientId: kv.id,
-		CmdId:    kv.getCmdId(),
+func (ck *Clerk) buildGetCommand(key string) *Command {
+	return &Command{
+		BasicArgs: BasicArgs{Type: Get, ClientId: ck.id, CmdId: ck.getCmdId()},
+		KVArgs:    &KVPair{Key: key},
 	}
-	switch opType {
-	case ShardConfig:
-		cmd.ShardConf = args.(*shardctrler.Config)
-	case ShardData:
-		cmd.ShardData = &args.(*SendShardArgs).Shard
-	default:
-		cmd.KVArgs = &args.(*KVArgs).KVPair
+}
+
+func (ck *Clerk) buildPutCommand(key, val string) *Command {
+	return ck.buildPutAppendCommand(Put, key, val)
+}
+
+func (ck *Clerk) buildAppendCommand(key, val string) *Command {
+	return ck.buildPutAppendCommand(Append, key, val)
+}
+
+func (ck *Clerk) buildPutAppendCommand(op CmdType, key, val string) *Command {
+	return &Command{
+		BasicArgs: BasicArgs{Type: op, ClientId: ck.id, CmdId: ck.getCmdId()},
+		KVArgs:    &KVPair{Key: key, Value: val},
 	}
-	return
+}
+
+func (kv *ShardKV) buildShardConfigCommand(shardConf *shardctrler.Config) *Command {
+	return &Command{
+		BasicArgs: BasicArgs{Type: ShardConfig, ClientId: kv.id, CmdId: kv.getCmdId()},
+		ShardConf: shardConf,
+	}
+}
+
+func (kv *ShardKV) buildShardCommand(op int, shardDetail *ShardDetail) *Command {
+	if op == Delete || op == ChangeShardStatus {
+		shardDetail.Data = nil
+	}
+	return &Command{
+		BasicArgs: BasicArgs{Type: ShardData, ClientId: kv.id, CmdId: kv.getCmdId()},
+		Shard: &Shard{
+			Op:          op,
+			ShardDetail: *shardDetail,
+		},
+	}
 }
 
 type Status int
@@ -135,6 +128,7 @@ const (
 	Failed = iota
 	ErrWrongGroup
 	ErrNotLeader
+	ErrShardUnavailable
 	OK
 )
 
@@ -148,28 +142,38 @@ func (s Status) String() string {
 		return "ErrNotLeader"
 	case OK:
 		return "OK"
+	case ErrShardUnavailable:
+		return "ErrShardUnavailable"
 	default:
 		return "Unknown Status"
 	}
 }
 
 type Reply struct {
-	Status Status
-	Value  string
+	ShardConfTerm int
+	Status        Status
+	Value         string
 }
 
 func (r *Reply) String() string {
-	return fmt.Sprintf("{Reply Status:%d,Val:%s}", r.Status, r.Value)
+	return fmt.Sprintf("{Reply Status:%v,ShardConfTerm:%d,Val:%s}", r.Status, r.ShardConfTerm, r.Value)
 }
 
 type DB interface {
 	get(key string) (val string)
-	set(key, val string)
-	append(key, val string)
-	setShard(shard int, val map[string]string)
-	setDB(data [shardctrler.NShards]map[string]string)
-	export(shard int) (db map[string]string)
-	exportAll() (db [shardctrler.NShards]map[string]string)
-	getShardStatus(shard int) ShardStatus
-	setShardStatus(shard int, status ShardStatus)
+	put(key, val string)
+	append(key, val string) string
+	setShard(shard *Shard)
+	deleteShard(shardNum, confNum int)
+	setDB(data [shardctrler.NShards]*ShardDetail)
+	exportShard(shard int) *ShardDetail
+	exportAll() (db [shardctrler.NShards]*ShardDetail)
+	getShardDetail(shardNum int) (ShardStatus, int)
+	getShardStatus(shardNum int) ShardStatus
+	setShardStatus(shardNum int, status ShardStatus)
+	compareAndSwapShardStatus(shardNum int, oldStatus, newStatus ShardStatus) bool
+	getShardConfNum(shardNum int) int
+	setShardConfNum(shardNum, confNum int)
+	getShardOwnerGid(shardNum int) int
+	setShardOwnerGid(shardNum, owner int)
 }

@@ -70,8 +70,8 @@ type Args struct {
 	// LeaveArg
 	GIDs []int
 	// MoveArg
-	Shard int
-	GID   int
+	ShardNum int
+	GID      int
 	// QueryArg
 	ConfigIdx int
 }
@@ -83,7 +83,7 @@ func (args *Args) String() string {
 	case LEAVE:
 		return fmt.Sprintf("{ArgType:LEAVE ClientId:%d,CmdId:%d,GIDs:%v}", args.ClientId, args.CommandId, args.GIDs)
 	case MOVE:
-		return fmt.Sprintf("{ArgType:Move ClientId:%d,CmdId:%d,Shard:%d,GID:%d}", args.ClientId, args.CommandId, args.Shard, args.GID)
+		return fmt.Sprintf("{ArgType:Move ClientId:%d,CmdId:%d,ShardNum:%d,GID:%d}", args.ClientId, args.CommandId, args.ShardNum, args.GID)
 	case QUERY:
 		return fmt.Sprintf("{ArgType:QUERY ClientId:%d,CmdId:%d,ConfigIdx:%d}", args.ClientId, args.CommandId, args.ConfigIdx)
 	default:

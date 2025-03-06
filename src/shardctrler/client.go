@@ -75,7 +75,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 		ClientId:  ck.id,
 		CommandId: ck.getCmdId(),
 		Type:      MOVE,
-		Shard:     shard,
+		ShardNum:  shard,
 		GID:       gid,
 	}
 	DPrintf("[Client]New Command Move %v\n", args)

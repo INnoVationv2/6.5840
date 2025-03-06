@@ -29,6 +29,9 @@ func (kv *ShardKV) getHistory(clientId int64, cmdId int32) (val string, ok bool)
 }
 
 func (kv *ShardKV) setHistory(clientId int64, cmdId int32, newVal string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
 	if _, ok := kv.history[clientId][cmdId]; !ok {
 		kv.history[clientId] = make(map[int32]string)
 	}
@@ -72,7 +75,6 @@ func (kv *ShardKV) setShardConfig(conf *shardctrler.Config) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	DPrintf("[%v]Set Shard Config:%v", kv.getServerDetail(), conf)
 	kv.shardConf = conf
 }
 
@@ -81,4 +83,20 @@ func (kv *ShardKV) getShardConfig() *shardctrler.Config {
 	defer kv.mu.RUnlock()
 
 	return kv.shardConf
+}
+
+func (kv *ShardKV) setMatchIndex(clientId int64, newMatchIdx int32) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if newMatchIdx > kv.matchIndex[clientId] {
+		kv.matchIndex[clientId] = newMatchIdx
+	}
+}
+
+func (kv *ShardKV) getMatchIndex(clientId int64) int32 {
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+
+	return kv.matchIndex[clientId]
 }

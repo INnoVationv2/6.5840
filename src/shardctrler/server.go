@@ -156,7 +156,7 @@ func (sc *ShardCtrler) applyCommand(cmd *Command) {
 func (sc *ShardCtrler) applyMoveCmd(cmd *Args) {
 	oldConf := sc.confDB.get(-1)
 	newConf := sc.createNewConfByOldConf(oldConf)
-	newConf.Shards[cmd.Shard] = cmd.GID
+	newConf.Shards[cmd.ShardNum] = cmd.GID
 	sc.confDB.append(newConf)
 }
 

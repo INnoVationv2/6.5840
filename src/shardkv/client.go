@@ -34,22 +34,22 @@ func (ck *Clerk) getCmdId() int32 {
 }
 
 func (ck *Clerk) Get(key string) string {
-	args := ck.buildGetArg(key)
+	args := ck.buildGetCommand(key)
 	return ck.callServer("Get", args).Value
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	args := ck.buildPutAppendArg(key, value)
+	args := ck.buildPutCommand(key, value)
 	ck.callServer("Put", args)
 }
 
 func (ck *Clerk) Append(key string, value string) {
-	args := ck.buildPutAppendArg(key, value)
+	args := ck.buildAppendCommand(key, value)
 	ck.callServer("Append", args)
 }
 
-func (ck *Clerk) callServer(op string, args *KVArgs) (reply *Reply) {
-	str := fmt.Sprintf("[Client]%s %v", op, args)
+func (ck *Clerk) callServer(op string, cmd *Command) (reply *Reply) {
+	str := fmt.Sprintf("[Client]%s %v", op, cmd)
 	DPrintf(str)
 	defer DPrintf("%s Complete", str)
 
@@ -57,21 +57,27 @@ func (ck *Clerk) callServer(op string, args *KVArgs) (reply *Reply) {
 		ck.updateShardConfig()
 	}
 
-	shard := key2shard(args.Key)
+	shard := key2shard(cmd.KVArgs.Key)
 	gid := ck.shardConfig.Shards[shard]
 	kvSrvClientEnds := ck.gidClientEndMap[gid]
 
 	leaderId := atomic.LoadInt32(&ck.leaderId)
 	serverNo := leaderId
-	reply = &Reply{Status: Failed}
 	for {
-		DPrintf("[Client]Send %s RPC %v To ShardKV %d", op, args, serverNo)
-		ok := kvSrvClientEnds[serverNo].Call("ShardKV."+op, args, reply)
+		reply = &Reply{Status: Failed}
+		DPrintf("[Client]Send Cmd:%v To ShardKV %d", cmd, serverNo)
+		ok := kvSrvClientEnds[serverNo].Call("ShardKV.Submit", cmd, reply)
+		DPrintf("[Client]Cmd:%v Result:%v,%v", cmd, ok, reply.Status)
 		if !ok || reply.Status == ErrWrongGroup {
 			if ck.updateShardConfig() {
 				gid = ck.shardConfig.Shards[shard]
 				kvSrvClientEnds = ck.gidClientEndMap[gid]
 				serverNo = 0
+			} else if !ok {
+				serverNo = (serverNo + 1) % int32(len(kvSrvClientEnds))
+			} else {
+				// ErrWrongGroup
+				cmd.CmdId = ck.getCmdId()
 			}
 			continue
 		}
@@ -79,16 +85,19 @@ func (ck *Clerk) callServer(op string, args *KVArgs) (reply *Reply) {
 		// 下面都是OK
 		switch reply.Status {
 		case OK:
-			go Report(kvSrvClientEnds[serverNo], serverNo, &args.BasicArgs)
+			if cmd.Type == Get {
+				go Report(kvSrvClientEnds[serverNo], serverNo, &cmd.BasicArgs)
+			}
 			atomic.StoreInt32(&ck.leaderId, serverNo)
 			return
-		case Failed:
-			DPrintf("[Client]CallServer %v Failed, Retrying...", args)
 		case ErrNotLeader:
 			serverNo = (serverNo + 1) % int32(len(kvSrvClientEnds))
 			if serverNo == leaderId {
 				time.Sleep(time.Millisecond * 10)
 			}
+		case ErrShardUnavailable:
+			cmd.CmdId = ck.getCmdId()
+			time.Sleep(time.Millisecond * 50)
 		}
 	}
 }
@@ -109,7 +118,7 @@ func (ck *Clerk) updateShardConfig() bool {
 			gidClientEndMap[gid] = append(gidClientEndMap[gid], clientEnd)
 		}
 	}
-	DPrintf("[Client]Update Shard Config: New ShardConfig:%v", &newConf)
+	DPrintf("[Client]New ShardConfig:%v", &newConf)
 	ck.shardConfig = &newConf
 	ck.gidClientEndMap = gidClientEndMap
 	return true
